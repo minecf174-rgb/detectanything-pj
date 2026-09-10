@@ -16,7 +16,7 @@
 ### 1. สร้าง Backend environment
 
 ```bash
-cd "detect anything"
+cd "detectanything-pj"
 python3 -m venv venv
 source venv/bin/activate
 python -m pip install --upgrade pip
