@@ -1,0 +1,271 @@
+Table users {
+  user_id bigint [pk, increment]
+  email varchar [unique, not null]
+  username varchar
+  password_hash varchar
+  is_active boolean [not null]
+  last_login_at timestamp
+  created_at timestamp
+}
+
+Table auth_sessions {
+  session_id varchar [pk]
+  user_id bigint [not null]
+  token_hash varchar [unique, not null]
+  expires_at timestamp [not null]
+  revoked_at timestamp
+  last_used_at timestamp
+  created_at timestamp
+
+  indexes {
+    user_id
+  }
+}
+
+Table projects {
+  project_id bigint [pk, increment]
+  owner_id bigint [not null]
+  name varchar [not null]
+  task_type varchar [not null]
+  created_at timestamp
+  updated_at timestamp
+
+  indexes {
+    owner_id
+  }
+}
+
+Table classes {
+  class_id bigint [pk, increment]
+  project_id bigint [not null]
+  name varchar [not null]
+  class_index integer [not null]
+  color varchar [not null]
+  created_at timestamp
+
+  indexes {
+    (project_id, name) [unique]
+    (project_id, class_index) [unique]
+  }
+}
+
+Table images {
+  image_id bigint [pk, increment]
+  project_id bigint [not null]
+  original_filename varchar
+  object_key varchar [not null]
+  file_hash varchar
+  width integer
+  height integer
+  status varchar [not null]
+  created_at timestamp
+  updated_at timestamp
+
+  indexes {
+    project_id
+    (project_id, file_hash)
+  }
+}
+
+Table annotation_sets {
+  annotation_set_id bigint [pk, increment]
+  image_id bigint [not null]
+  revision integer [not null]
+  source_type varchar [not null]
+  source_model_id bigint
+  parent_annotation_set_id bigint
+  status varchar [not null]
+  created_by bigint
+  reviewed_by bigint
+  created_at timestamp
+  reviewed_at timestamp
+
+  indexes {
+    image_id
+    (image_id, revision) [unique]
+    source_model_id
+    parent_annotation_set_id
+  }
+}
+
+Table annotations {
+  annotation_id bigint [pk, increment]
+  annotation_set_id bigint [not null]
+  class_id bigint [not null]
+  x_min float [not null]
+  y_min float [not null]
+  x_max float [not null]
+  y_max float [not null]
+  confidence float
+  created_at timestamp
+
+  indexes {
+    annotation_set_id
+    class_id
+  }
+}
+
+Table dataset_versions {
+  version_id bigint [pk, increment]
+  project_id bigint [not null]
+  version_number integer [not null]
+  preprocess_config jsonb
+  augmentation_config jsonb
+  created_by bigint
+  created_at timestamp
+
+  indexes {
+    (project_id, version_number) [unique]
+  }
+}
+
+Table dataset_version_items {
+  version_id bigint [not null]
+  image_id bigint [not null]
+  annotation_set_id bigint [not null]
+  split varchar [not null]
+
+  indexes {
+    (version_id, image_id) [pk]
+    annotation_set_id
+    split
+  }
+}
+
+Table training_runs {
+  training_run_id bigint [pk, increment]
+  project_id bigint [not null]
+  version_id bigint [not null]
+  model_type varchar [not null]
+  base_model varchar
+  training_config jsonb
+  status varchar [not null]
+  progress_percent float
+  error_message text
+  log_object_key varchar
+  started_at timestamp
+  finished_at timestamp
+  created_at timestamp
+  updated_at timestamp
+
+  indexes {
+    project_id
+    version_id
+    status
+  }
+}
+
+Table training_metrics {
+  metric_id bigint [pk, increment]
+  training_run_id bigint [not null]
+  epoch integer
+  box_loss float
+  cls_loss float
+  precision float
+  recall float
+  map50 float
+  map50_95 float
+  created_at timestamp
+
+  indexes {
+    training_run_id
+    (training_run_id, epoch)
+  }
+}
+
+Table models {
+  model_id bigint [pk, increment]
+  project_id bigint [not null]
+  training_run_id bigint [not null]
+  version integer [not null]
+  weights_object_key varchar [not null]
+  precision float
+  recall float
+  map50 float
+  map50_95 float
+  created_at timestamp
+
+  indexes {
+    (project_id, version) [unique]
+    training_run_id
+  }
+}
+
+Table model_artifacts {
+  artifact_id bigint [pk, increment]
+  model_id bigint [not null]
+  artifact_type varchar [not null]
+  object_key varchar [not null]
+  created_at timestamp
+
+  indexes {
+    model_id
+    (model_id, artifact_type) [unique]
+  }
+}
+
+Table auto_label_jobs {
+  job_id bigint [pk, increment]
+  project_id bigint [not null]
+  model_id bigint [not null]
+  confidence_threshold float
+  max_predictions_per_image integer
+  total_images integer
+  processed_images integer
+  status varchar [not null]
+  error_message text
+  started_at timestamp
+  finished_at timestamp
+  created_at timestamp
+  updated_at timestamp
+
+  indexes {
+    project_id
+    model_id
+    status
+  }
+}
+
+Table auto_label_job_items {
+  job_id bigint [not null]
+  image_id bigint [not null]
+  annotation_set_id bigint
+  status varchar [not null]
+  error_message text
+  created_at timestamp
+  updated_at timestamp
+
+  indexes {
+    (job_id, image_id) [pk]
+    annotation_set_id
+    status
+  }
+}
+
+Ref: projects.owner_id > users.user_id
+Ref: auth_sessions.user_id > users.user_id
+Ref: classes.project_id > projects.project_id
+Ref: images.project_id > projects.project_id
+Ref: annotation_sets.image_id > images.image_id
+Ref: annotation_sets.source_model_id > models.model_id
+Ref: annotation_sets.parent_annotation_set_id > annotation_sets.annotation_set_id
+Ref: annotation_sets.created_by > users.user_id
+Ref: annotation_sets.reviewed_by > users.user_id
+Ref: annotations.annotation_set_id > annotation_sets.annotation_set_id
+Ref: annotations.class_id > classes.class_id
+Ref: dataset_versions.project_id > projects.project_id
+Ref: dataset_versions.created_by > users.user_id
+Ref: dataset_version_items.version_id > dataset_versions.version_id
+Ref: dataset_version_items.image_id > images.image_id
+Ref: dataset_version_items.annotation_set_id > annotation_sets.annotation_set_id
+Ref: training_runs.project_id > projects.project_id
+Ref: training_runs.version_id > dataset_versions.version_id
+Ref: training_metrics.training_run_id > training_runs.training_run_id
+Ref: models.project_id > projects.project_id
+Ref: models.training_run_id > training_runs.training_run_id
+Ref: model_artifacts.model_id > models.model_id
+Ref: auto_label_jobs.project_id > projects.project_id
+Ref: auto_label_jobs.model_id > models.model_id
+Ref: auto_label_job_items.job_id > auto_label_jobs.job_id
+Ref: auto_label_job_items.image_id > images.image_id
+Ref: auto_label_job_items.annotation_set_id > annotation_sets.annotation_set_id

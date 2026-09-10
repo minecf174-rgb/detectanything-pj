@@ -1,0 +1,95 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>CV Platform - Early UI Mockup</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <div class="mockup-note">Offline UI mockup - sample data only</div>
+    <header class="topbar">
+      <button class="brand" id="dashboardButton" type="button">
+        <strong>CV Training Platform</strong>
+        <span id="pageStatus">Project refreshed</span>
+      </button>
+      <div class="top-actions">
+        <button type="button">Refresh</button>
+        <button type="button">Sign out</button>
+      </div>
+    </header>
+
+    <main id="dashboard" class="dashboard hidden">
+      <div class="dashboard-heading">
+        <div><span>WORKSPACE</span><h1>Your projects</h1><p>Choose a project to continue.</p></div>
+        <button class="primary" type="button">+ New project</button>
+      </div>
+      <div class="project-grid">
+        <button class="project-card" data-open-workspace type="button">
+          <span class="project-icon">IMG</span><strong>Box Detection</strong><b>OBJECT DETECTION</b><small>Created 8/10/2026</small>
+        </button>
+        <button class="project-card" data-open-workspace type="button">
+          <span class="project-icon">IMG</span><strong>Human Fall</strong><b>POSE ESTIMATION</b><small>Created 8/31/2026</small>
+        </button>
+      </div>
+    </main>
+
+    <main id="workspace" class="workspace">
+      <aside class="left-panel">
+        <p class="eyebrow">PROJECTS</p>
+        <h2>My Detection Project</h2>
+        <select><option>All projects</option><option>Box Detection</option><option>Human Fall</option></select>
+        <button class="danger" type="button">Delete project</button>
+
+        <p class="eyebrow section-gap">CLASSES</p>
+        <div class="class-fields">
+          <label>Class Name<input value="object" /></label>
+          <label>Color<input type="color" value="#16a34a" /></label>
+        </div>
+        <button class="wide" type="button">+ Add Class</button>
+        <button class="class-row active" type="button"><i></i><strong>0: object</strong><span>Delete</span></button>
+      </aside>
+
+      <section class="center-panel">
+        <div class="toolbar">
+          <button type="button">Upload</button>
+          <button type="button">View all images</button>
+          <label>Import images<input value="30" /></label>
+          <label>YOLO classes<select><option>All indexes</option></select></label>
+          <button type="button">Import YOLO ZIP</button>
+          <select><option>#1 sample-box-001.jpg</option></select>
+          <select><option>object</option></select>
+          <button type="button">Edit labels</button>
+          <button class="primary" id="saveButton" type="button">Save</button>
+          <button type="button">Undo</button>
+          <button type="button">Clear</button>
+        </div>
+
+        <div class="canvas" id="canvas">
+          <div class="scene">
+            <div class="shelf"></div><div class="parcel"></div><div class="belt"></div>
+            <div class="sample-box"><span>object 0.91</span></div>
+          </div>
+          <p>Sample annotation preview</p>
+        </div>
+
+        <div class="image-strip">
+          <button class="active" type="button">#1</button><button type="button">#2</button><button type="button">#3</button>
+          <button type="button">#4</button><button type="button">#5</button><button type="button">#6</button>
+        </div>
+      </section>
+
+      <aside class="right-panel">
+        <section class="panel"><h3>DATASET</h3><label>Dataset version<select><option>Dataset version 1</option></select></label><button class="wide" type="button">+ Version</button><button class="wide" type="button">Build</button><button class="wide" type="button">Export</button><div class="metric"><span>Versions</span><strong>1</strong></div></section>
+        <section class="panel"><h3>TRAINING</h3><button class="wide" type="button">Configure &amp; Train</button><div class="metric"><span>Base</span><strong>yolo26n</strong></div><div class="metric"><span>Runs</span><strong>1</strong></div><div class="metric"><span>Latest</span><strong>COMPLETED</strong></div></section>
+        <section class="panel"><h3>AUTO LABEL</h3><label>Model version<select><option>Model v1 - mAP50 0.962</option></select></label><button class="wide" type="button">Run YOLO</button><div class="metric"><span>Pending</span><strong>12</strong></div></section>
+      </aside>
+    </main>
+
+    <section class="review" id="reviewQueue">
+      <h3>REVIEW QUEUE</h3><p>No pending model suggestions</p>
+    </section>
+    <div class="toast" id="toast" role="status"></div>
+    <script src="app.js"></script>
+  </body>
+</html>

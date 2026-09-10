@@ -1,0 +1,38 @@
+[project]
+name = "cv-training-platform"
+version = "0.1.0"
+description = "Computer vision dataset and training platform"
+requires-python = ">=3.11"
+dependencies = [
+  "fastapi>=0.115.0",
+  "email-validator>=2.0.0",
+  "python-multipart>=0.0.20",
+  "uvicorn[standard]>=0.30.0",
+  "sqlalchemy>=2.0.0",
+  "alembic>=1.13.0",
+  "pydantic-settings>=2.4.0",
+  "PyJWT>=2.10.0",
+  "pwdlib[argon2]>=0.2.1",
+  "ultralytics>=8.4.0",
+  "segment-anything @ git+https://github.com/facebookresearch/segment-anything.git",
+  "sam-2 @ git+https://github.com/facebookresearch/sam2.git",
+  "torch",
+  "torchvision",
+  "opencv-python",
+  "pillow",
+  "numpy",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.0.0",
+  "httpx2>=0.1.0",
+  "ruff>=0.8.0",
+]
+
+[tool.setuptools.packages.find]
+include = ["app*"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
