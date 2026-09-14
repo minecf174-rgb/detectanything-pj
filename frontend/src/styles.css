@@ -1193,8 +1193,130 @@ h2 {
 
 .class-form {
   display: grid;
+  gap: 10px;
+}
+
+.class-color-picker {
+  display: grid;
+  gap: 6px;
+  position: relative;
+}
+
+.class-color-picker > span {
+  color: #5d697c;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.class-color-trigger {
+  display: grid;
   gap: 8px;
-  grid-template-columns: minmax(0, 1fr) 54px;
+  grid-template-columns: 22px minmax(0, 1fr) auto;
+  padding: 0 9px;
+  text-align: left;
+  width: 100%;
+}
+
+.class-color-trigger > span:nth-child(2) {
+  color: #455268;
+  font-size: 10px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.class-color-trigger[aria-expanded="true"] {
+  border-color: #276ef1;
+  box-shadow: 0 0 0 2px rgba(39, 110, 241, .15);
+}
+
+.class-color-trigger[aria-expanded="true"] svg { transform: rotate(90deg); }
+
+.class-color-preview {
+  border: 1px solid rgba(0, 0, 0, .16);
+  border-radius: 4px;
+  height: 20px;
+  width: 20px;
+}
+
+.class-color-popover {
+  background: #fff;
+  border: 1px solid #b9c7da;
+  border-radius: 7px;
+  box-shadow: 0 12px 28px rgba(30, 46, 70, .2);
+  display: grid;
+  gap: 10px;
+  left: 0;
+  padding: 10px;
+  position: absolute;
+  top: calc(100% + 4px);
+  width: 100%;
+  z-index: 40;
+}
+
+.class-color-popover > strong {
+  color: #455268;
+  font-size: 10px;
+}
+
+.class-color-swatches {
+  display: grid;
+  gap: 6px;
+  grid-template-columns: repeat(5, 28px);
+}
+
+.class-color-swatches button {
+  border: 2px solid #fff;
+  border-radius: 5px;
+  color: #fff;
+  height: 28px;
+  justify-content: center;
+  min-height: 28px;
+  padding: 0;
+  width: 28px;
+}
+
+.class-color-swatches button.selected {
+  box-shadow: 0 0 0 2px #1d4ed8;
+}
+
+.custom-color {
+  align-items: center;
+  border: 1px solid #cbd3df;
+  border-radius: 6px;
+  cursor: pointer;
+  display: grid;
+  gap: 8px;
+  grid-template-columns: 30px minmax(0, 1fr);
+  min-height: 34px;
+  padding: 3px 8px 3px 3px;
+}
+
+.custom-color.selected {
+  background: #edf4ff;
+  border-color: #276ef1;
+}
+
+.custom-color input[type="color"] {
+  border: 0;
+  height: 26px;
+  padding: 1px;
+  width: 30px;
+}
+
+.custom-color span {
+  color: #5d697c;
+  font-size: 10px;
+  font-weight: 800;
+}
+
+.class-color-picker.compact .class-color-swatches {
+  grid-template-columns: repeat(5, 26px);
+}
+
+.class-color-picker.compact .class-color-swatches button {
+  height: 26px;
+  min-height: 26px;
+  width: 26px;
 }
 
 .select-action {
@@ -1214,12 +1336,35 @@ h2 {
   border-radius: 7px;
   display: grid;
   gap: 8px;
-  grid-template-columns: minmax(0, 1fr) 34px;
+  grid-template-columns: minmax(0, 1fr) 30px 30px;
   justify-items: start;
   min-height: 38px;
   padding: 4px;
   text-align: left;
   width: 100%;
+}
+
+.class-edit-row {
+  background: #f7faff;
+  border: 1px solid #8eb6f8;
+  border-radius: 7px;
+  display: grid;
+  gap: 10px;
+  padding: 10px;
+}
+
+.class-edit-row input { width: 100%; }
+
+.class-edit-actions {
+  display: grid;
+  gap: 6px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.class-edit-actions button {
+  justify-content: center;
+  min-width: 0;
+  padding: 0 6px;
 }
 
 .list-row.active {
@@ -1250,14 +1395,23 @@ h2 {
   text-overflow: ellipsis;
 }
 
+.mini-edit,
 .mini-danger {
-  border-color: #f0c8c8;
-  color: #b42318;
   height: 30px;
   justify-content: center;
   min-height: 30px;
   padding: 0;
   width: 30px;
+}
+
+.mini-edit {
+  border-color: #c7d7ef;
+  color: #245ca8;
+}
+
+.mini-danger {
+  border-color: #f0c8c8;
+  color: #b42318;
 }
 
 .swatch {
@@ -1703,6 +1857,28 @@ h2 {
 
 .training-field-wide {
   grid-column: 1 / -1;
+}
+
+.training-advanced-toggle {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  justify-content: stretch;
+  margin-top: 2px;
+  text-align: left;
+  width: 100%;
+}
+
+.training-advanced-toggle span { text-align: left; }
+.training-advanced-toggle[aria-expanded="true"] svg:last-child { transform: rotate(90deg); }
+
+.training-advanced-panel {
+  background: #f7f9fc;
+  border: 1px solid #dce3ed;
+  border-radius: 7px;
+  display: grid;
+  gap: 14px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  padding: 14px;
 }
 
 .training-toggles {

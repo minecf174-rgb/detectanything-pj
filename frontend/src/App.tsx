@@ -13,6 +13,7 @@ import {
   Image as ImageIcon,
   Layers3,
   MoreHorizontal,
+  Pencil,
   Play,
   Plus,
   RefreshCw,
@@ -88,6 +89,11 @@ const POSE_KEYPOINT_NAMES = [
 const COCO_SKELETON_EDGES = [
   [15, 13], [13, 11], [16, 14], [14, 12], [11, 12], [5, 11], [6, 12], [5, 6],
   [5, 7], [6, 8], [7, 9], [8, 10], [1, 2], [0, 1], [0, 2], [1, 3], [2, 4], [3, 5], [4, 6],
+] as const;
+
+const DEFAULT_CLASS_COLORS = [
+  "#e11d48", "#f97316", "#f59e0b", "#16a34a", "#0d9488",
+  "#0891b2", "#2563eb", "#7c3aed", "#c026d3", "#64748b",
 ] as const;
 
 type AutoLabelResult = {
@@ -247,6 +253,9 @@ export function App() {
   const [projectActionsOpen, setProjectActionsOpen] = useState(false);
   const [className, setClassName] = useState("object");
   const [classColor, setClassColor] = useState("#16a34a");
+  const [editingClassId, setEditingClassId] = useState<number | null>(null);
+  const [editingClassName, setEditingClassName] = useState("");
+  const [editingClassColor, setEditingClassColor] = useState("#16a34a");
   const [importLimit, setImportLimit] = useState("");
   const [importClassMode, setImportClassMode] = useState<"all" | "selected">("all");
   const [importClassIndexes, setImportClassIndexes] = useState("");
@@ -285,6 +294,7 @@ export function App() {
   const [status, setStatus] = useState("Ready");
   const [busy, setBusy] = useState(false);
   const projectRequestId = useRef(0);
+  const projectActionsRef = useRef<HTMLDivElement | null>(null);
 
   const selectedImage = images.find((image) => image.image_id === selectedImageId) ?? null;
   const selectedProject = projects.find((project) => project.project_id === selectedProjectId) ?? null;
@@ -316,6 +326,22 @@ export function App() {
       .filter((item) => item.annotation_set_id != null && pendingImages.has(item.image_id))
       .map((item) => item.annotation_set_id as number))];
   }, [autoJobs, imageAnnotationStatuses]);
+
+  useEffect(() => {
+    if (!projectActionsOpen) return;
+    const closeOutside = (event: MouseEvent) => {
+      if (!projectActionsRef.current?.contains(event.target as Node)) setProjectActionsOpen(false);
+    };
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setProjectActionsOpen(false);
+    };
+    document.addEventListener("mousedown", closeOutside);
+    window.addEventListener("keydown", closeOnEscape);
+    return () => {
+      document.removeEventListener("mousedown", closeOutside);
+      window.removeEventListener("keydown", closeOnEscape);
+    };
+  }, [projectActionsOpen]);
   const latestDataset = datasets[datasets.length - 1] ?? null;
   const selectedDataset = datasets.find((dataset) => dataset.version_id === selectedDatasetVersionId) ?? latestDataset;
   const latestModel = models[models.length - 1] ?? null;
@@ -371,6 +397,7 @@ export function App() {
     setPoseEditVisibilityMode("visible");
     setSelectedImageId(null);
     setSelectedClassId(null);
+    setEditingClassId(null);
     setAnnotationImageId(null);
     setAutoLabelResults(null);
     setReviewToOpen(null);
@@ -790,12 +817,40 @@ export function App() {
   const addClass = () => {
     if (!selectedProjectId) return;
     const nextClassIndex = classes.reduce((maxIndex, labelClass) => Math.max(maxIndex, labelClass.class_index), -1) + 1;
-    void runAction("Create class", () => api.createClass({
-      project_id: selectedProjectId,
-      name: className.trim() || `class_${classes.length}`,
-      class_index: nextClassIndex,
-      color: classColor,
-    }));
+    void runAction("Create class", async () => {
+      const created = await api.createClass({
+        project_id: selectedProjectId,
+        name: className.trim() || `class_${classes.length}`,
+        class_index: nextClassIndex,
+        color: classColor,
+      });
+      setSelectedClassId(created.class_id);
+      setClassName("");
+      setClassColor(DEFAULT_CLASS_COLORS[(nextClassIndex + 1) % DEFAULT_CLASS_COLORS.length]);
+    });
+  };
+
+  const startClassEdit = (labelClass: LabelClass) => {
+    setSelectedClassId(labelClass.class_id);
+    setEditingClassId(labelClass.class_id);
+    setEditingClassName(labelClass.name);
+    setEditingClassColor(labelClass.color);
+  };
+
+  const cancelClassEdit = () => {
+    setEditingClassId(null);
+    setEditingClassName("");
+  };
+
+  const saveClassEdit = () => {
+    if (editingClassId == null || !editingClassName.trim()) return;
+    void runAction("Update class", async () => {
+      await api.updateClass(editingClassId, {
+        name: editingClassName.trim(),
+        color: editingClassColor,
+      });
+      cancelClassEdit();
+    });
   };
 
   const deleteClass = (labelClass: LabelClass) => {
@@ -1194,7 +1249,7 @@ export function App() {
               </div>
             </div>
           </div>
-          <div className="project-context-actions">
+          <div className="project-context-actions" ref={projectActionsRef}>
             <button className="icon-button" onClick={() => setProjectActionsOpen((current) => !current)} aria-expanded={projectActionsOpen} title="Project actions" type="button">
               <MoreHorizontal size={19} />
             </button>
@@ -1290,20 +1345,32 @@ export function App() {
               Class Name
               <input value={className} onChange={(event) => setClassName(event.target.value)} />
             </label>
-            <label>
-              Color
-              <input type="color" value={classColor} onChange={(event) => setClassColor(event.target.value)} />
-            </label>
+            <ClassColorPicker value={classColor} onChange={setClassColor} />
           </div>
           <button onClick={addClass} disabled={!selectedProjectId || busy}><Plus size={16} /> Add Class</button>
           <div className="list">
-            {classes.map((labelClass) => (
+            {classes.map((labelClass) => editingClassId === labelClass.class_id ? (
+              <div className="class-edit-row" key={labelClass.class_id}>
+                <label>
+                  Class name
+                  <input value={editingClassName} onChange={(event) => setEditingClassName(event.target.value)} autoFocus maxLength={120} />
+                </label>
+                <ClassColorPicker value={editingClassColor} onChange={setEditingClassColor} compact />
+                <div className="class-edit-actions">
+                  <button className="primary" onClick={saveClassEdit} disabled={busy || !editingClassName.trim()} type="button"><Save size={14} /> Save</button>
+                  <button onClick={cancelClassEdit} disabled={busy} type="button"><X size={14} /> Cancel</button>
+                </div>
+              </div>
+            ) : (
               <div className={labelClass.class_id === selectedClassId ? "list-row active" : "list-row"} key={labelClass.class_id}>
                 <button className="class-select" onClick={() => setSelectedClassId(labelClass.class_id)}>
                   <span className="swatch" style={{ background: labelClass.color }} />
                   <span>{labelClass.class_index}: {labelClass.name}</span>
                 </button>
-                <button className="mini-danger" onClick={() => deleteClass(labelClass)} title="Delete class">
+                <button className="mini-edit" onClick={() => startClassEdit(labelClass)} title="Edit class" type="button">
+                  <Pencil size={14} />
+                </button>
+                <button className="mini-danger" onClick={() => deleteClass(labelClass)} title="Delete class" type="button">
                   <Trash2 size={14} />
                 </button>
               </div>
@@ -1503,7 +1570,6 @@ export function App() {
                   <Metric label="Image size" value={`${trainingSettings.imgsz}px`} />
                   <Metric label="Batch size" value={trainingSettings.batch} />
                 </div>
-                <button onClick={() => setTrainingSetupOpen(true)} disabled={!selectedDataset || busy}><Settings2 size={16} /> Edit configuration</button>
               </div>
               <div className="section-panel">
                 <div className="panel-heading"><strong>Latest run</strong><span>{runs.length ? `${runs.length} training runs` : "No training run yet"}</span></div>
@@ -2083,6 +2149,7 @@ function TrainingSetupModal({
   onTrain: () => void;
 }) {
   const poseProject = taskType === "POSE_ESTIMATION";
+  const [advancedOpen, setAdvancedOpen] = useState(false);
   const update = <K extends keyof YoloTrainingSettings>(key: K, value: YoloTrainingSettings[K]) => {
     onChange({ ...settings, [key]: value });
   };
@@ -2165,35 +2232,43 @@ function TrainingSetupModal({
               {[1, 2, 4, 8, 16, 32].map((size) => <option value={size} key={size}>{size}</option>)}
             </select>
           </label>
-          <NumberField label="Patience" value={settings.patience} min={0} max={500} onChange={(value) => update("patience", value)} />
-          <label className="training-field">
-            <span>Optimizer</span>
-            <select value={settings.optimizer} onChange={(event) => update("optimizer", event.target.value as YoloTrainingSettings["optimizer"])}>
-              <option value="auto">Auto</option>
-              <option value="AdamW">AdamW</option>
-              <option value="Adam">Adam</option>
-              <option value="SGD">SGD</option>
-            </select>
-          </label>
-          <label className="training-field">
-            <span>Device</span>
-            <select value={settings.device} onChange={(event) => update("device", event.target.value as YoloTrainingSettings["device"])}>
-              <option value="mps">Apple MPS</option>
-              <option value="cpu">CPU</option>
-              <option value="auto">Auto</option>
-            </select>
-          </label>
           <label className="training-field">
             <span>Learning rate</span>
             <input type="number" value={settings.lr0} min={0.000001} max={1} step={0.001} onChange={(event) => update("lr0", Number(event.target.value))} />
           </label>
-          <NumberField label="Workers" value={settings.workers} min={0} max={32} onChange={(value) => update("workers", value)} />
 
-          <div className="training-toggles training-field-wide">
-            <label><input type="checkbox" checked={settings.amp} onChange={(event) => update("amp", event.target.checked)} /> Mixed precision</label>
-            <label><input type="checkbox" checked={settings.cache} onChange={(event) => update("cache", event.target.checked)} /> Cache images</label>
-            <label><input type="checkbox" checked={settings.cos_lr} onChange={(event) => update("cos_lr", event.target.checked)} /> Cosine learning rate</label>
-          </div>
+          <button className="training-advanced-toggle training-field-wide" type="button" onClick={() => setAdvancedOpen((current) => !current)} aria-expanded={advancedOpen}>
+            <Settings2 size={16} />
+            <span>Advanced options</span>
+            <ChevronRight size={16} />
+          </button>
+
+          {advancedOpen && <div className="training-advanced-panel training-field-wide">
+            <NumberField label="Patience" value={settings.patience} min={0} max={500} onChange={(value) => update("patience", value)} />
+            <label className="training-field">
+              <span>Optimizer</span>
+              <select value={settings.optimizer} onChange={(event) => update("optimizer", event.target.value as YoloTrainingSettings["optimizer"])}>
+                <option value="auto">Auto</option>
+                <option value="AdamW">AdamW</option>
+                <option value="Adam">Adam</option>
+                <option value="SGD">SGD</option>
+              </select>
+            </label>
+            <label className="training-field">
+              <span>Device</span>
+              <select value={settings.device} onChange={(event) => update("device", event.target.value as YoloTrainingSettings["device"])}>
+                <option value="mps">Apple MPS</option>
+                <option value="cpu">CPU</option>
+                <option value="auto">Auto</option>
+              </select>
+            </label>
+            <NumberField label="Workers" value={settings.workers} min={0} max={32} onChange={(value) => update("workers", value)} />
+            <div className="training-toggles training-field-wide">
+              <label><input type="checkbox" checked={settings.amp} onChange={(event) => update("amp", event.target.checked)} /> Mixed precision</label>
+              <label><input type="checkbox" checked={settings.cache} onChange={(event) => update("cache", event.target.checked)} /> Cache images</label>
+              <label><input type="checkbox" checked={settings.cos_lr} onChange={(event) => update("cos_lr", event.target.checked)} /> Cosine learning rate</label>
+            </div>
+          </div>}
         </div>
 
         <footer className="training-modal-footer">
@@ -2272,6 +2347,63 @@ function NumberField({
       <input type="number" value={value} min={min} max={max} onChange={(event) => onChange(Number(event.target.value))} />
     </label>
   );
+}
+
+function ClassColorPicker({ value, onChange, compact = false }: {
+  value: string;
+  onChange: (value: string) => void;
+  compact?: boolean;
+}) {
+  const [open, setOpen] = useState(false);
+  const pickerRef = useRef<HTMLDivElement | null>(null);
+  const normalizedValue = value.toLowerCase();
+  const customSelected = !DEFAULT_CLASS_COLORS.some((color) => color === normalizedValue);
+
+  useEffect(() => {
+    if (!open) return;
+    const closeOutside = (event: MouseEvent) => {
+      if (!pickerRef.current?.contains(event.target as Node)) setOpen(false);
+    };
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setOpen(false);
+    };
+    document.addEventListener("mousedown", closeOutside);
+    window.addEventListener("keydown", closeOnEscape);
+    return () => {
+      document.removeEventListener("mousedown", closeOutside);
+      window.removeEventListener("keydown", closeOnEscape);
+    };
+  }, [open]);
+
+  return <div className={`class-color-picker ${compact ? "compact" : ""}`} ref={pickerRef}>
+    <span>Color</span>
+    <button className="class-color-trigger" type="button" onClick={() => setOpen((current) => !current)} aria-expanded={open} aria-haspopup="dialog">
+      <span className="class-color-preview" style={{ background: value }} />
+      <span>{value.toUpperCase()}</span>
+      <ChevronRight size={15} />
+    </button>
+    {open && <div className="class-color-popover" role="dialog" aria-label="Choose class color">
+      <strong>Choose a color</strong>
+      <div className="class-color-swatches">
+        {DEFAULT_CLASS_COLORS.map((color) => (
+          <button
+            aria-label={`Use class color ${color}`}
+            aria-pressed={normalizedValue === color}
+            className={normalizedValue === color ? "selected" : ""}
+            key={color}
+            onClick={() => { onChange(color); setOpen(false); }}
+            style={{ background: color }}
+            title={color}
+            type="button"
+          >{normalizedValue === color && <Check size={13} />}</button>
+        ))}
+      </div>
+      <label className={customSelected ? "custom-color selected" : "custom-color"}>
+        <input type="color" value={value} onChange={(event) => { onChange(event.target.value); setOpen(false); }} />
+        <span>Custom color</span>
+      </label>
+    </div>}
+  </div>;
 }
 
 function useProtectedImageUrl(image: ImageItem | null) {

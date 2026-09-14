@@ -40,15 +40,22 @@ node --version
 npm --version
 ```
 
-## 1. Clone และสร้าง config
+## 1. Clone โปรเจกต์
 
 ```bash
 git clone <repository-url>
 cd "detect anything"
+```
+
+สำหรับ local development สามารถข้ามการสร้าง `.env` ได้ เพราะ Backend มีค่า default สำหรับ SQLite, storage, temp และ CORS อยู่แล้ว
+
+หากต้องการเปลี่ยน config หรือเตรียม deploy ให้สร้าง `.env`:
+
+```bash
 cp .env.example .env
 ```
 
-สร้าง JWT secret ใหม่สำหรับเครื่องนั้น:
+จากนั้นสร้าง JWT secret ใหม่สำหรับเครื่องนั้น:
 
 ```bash
 python3 -c 'import secrets; print(secrets.token_urlsafe(48))'

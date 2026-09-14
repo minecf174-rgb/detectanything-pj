@@ -3,7 +3,7 @@ from sqlalchemy.orm import Session
 
 from app.modules.annotations.models import Annotation
 from app.modules.classes.models import LabelClass
-from app.modules.classes.schemas import ClassCreate
+from app.modules.classes.schemas import ClassCreate, ClassUpdate
 
 
 class ClassRepository:
@@ -32,6 +32,12 @@ class ClassRepository:
 
     def get(self, class_id: int) -> LabelClass | None:
         return self.db.get(LabelClass, class_id)
+
+    def update(self, label_class: LabelClass, data: ClassUpdate) -> LabelClass:
+        label_class.name = data.name
+        label_class.color = data.color.lower()
+        self.db.flush()
+        return label_class
 
     def annotation_count(self, class_id: int) -> int:
         return self.db.scalar(

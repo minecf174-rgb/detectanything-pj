@@ -125,3 +125,40 @@ def test_unused_dataset_version_can_be_deleted():
     deleted = client.delete(f"/datasets/versions/{version['version_id']}", headers=headers)
     assert deleted.status_code == 204, deleted.text
     assert client.get(f"/datasets/projects/{project['project_id']}/versions", headers=headers).json() == []
+
+
+def test_class_name_and_color_can_be_updated_without_changing_index():
+    owner_headers = _register("class-owner")
+    other_headers = _register("class-other")
+    project = client.post(
+        "/projects",
+        headers=owner_headers,
+        json={"name": "Editable classes", "task_type": "OBJECT_DETECTION"},
+    ).json()
+    label_class = client.post(
+        "/classes",
+        headers=owner_headers,
+        json={
+            "project_id": project["project_id"],
+            "name": "old-name",
+            "class_index": 0,
+            "color": "#16a34a",
+        },
+    ).json()
+
+    forbidden = client.patch(
+        f"/classes/{label_class['class_id']}",
+        headers=other_headers,
+        json={"name": "not-allowed", "color": "#e11d48"},
+    )
+    assert forbidden.status_code == 403, forbidden.text
+
+    updated = client.patch(
+        f"/classes/{label_class['class_id']}",
+        headers=owner_headers,
+        json={"name": "renamed-object", "color": "#2563EB"},
+    )
+    assert updated.status_code == 200, updated.text
+    assert updated.json()["name"] == "renamed-object"
+    assert updated.json()["color"] == "#2563eb"
+    assert updated.json()["class_index"] == 0

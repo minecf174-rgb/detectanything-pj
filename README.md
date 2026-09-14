@@ -25,7 +25,20 @@ python -m pip install -e ".[dev]"
 
 แพ็กเกจ ML เช่น PyTorch, Ultralytics, SAM และ OpenCV มีขนาดใหญ่ การติดตั้งครั้งแรกอาจใช้เวลาสักพัก
 
-### 2. สร้าง environment config
+### 2. Environment config (ไม่บังคับสำหรับ local)
+
+การรันบนเครื่องตัวเองไม่จำเป็นต้องมี `.env` เพราะ Backend มีค่า development default ครบแล้ว:
+
+```dotenv
+DATABASE_URL=sqlite:///./cv_platform.sqlite3
+STORAGE_ROOT=storage
+TEMP_ROOT=temp
+CORS_ORIGINS=http://127.0.0.1:5173,http://localhost:5173
+```
+
+ข้ามขั้นตอนนี้ได้และไปดาวน์โหลด pretrained models ต่อได้เลย
+
+ให้สร้าง `.env` เฉพาะเมื่อต้องการเปลี่ยน config หรือเตรียม deploy:
 
 ```bash
 cp .env.example .env
@@ -34,7 +47,7 @@ python -c 'import secrets; print(secrets.token_urlsafe(48))'
 
 นำข้อความที่คำสั่งสร้างให้ไปแทนค่า `AUTH_JWT_SECRET` ใน `.env`
 
-ตัวอย่าง local config:
+ตัวอย่าง config:
 
 ```dotenv
 DATABASE_URL=sqlite:///./cv_platform.sqlite3
@@ -47,7 +60,7 @@ AUTH_REFRESH_TOKEN_DAYS=14
 AUTH_ALLOW_LEGACY_ACCOUNT_CLAIM=false
 ```
 
-ห้าม commit `.env` เพราะเป็นค่าลับเฉพาะเครื่อง
+ห้าม commit `.env` เพราะเป็นค่าลับเฉพาะเครื่อง ค่า JWT default เหมาะกับ local development เท่านั้นและต้องเปลี่ยนก่อนเปิดระบบให้เครื่องอื่นเข้าถึง
 
 ### 3. ดาวน์โหลด pretrained models ให้เว็บไซต์ใช้
 

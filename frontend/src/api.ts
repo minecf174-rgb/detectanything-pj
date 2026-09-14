@@ -343,6 +343,10 @@ export const api = {
     method: "POST",
     body: JSON.stringify(payload),
   }),
+  updateClass: (classId: number, payload: { name: string; color: string }) => request<LabelClass>(`/classes/${classId}`, {
+    method: "PATCH",
+    body: JSON.stringify(payload),
+  }),
   deleteClass: (classId: number) => request<void>(`/classes/${classId}`, {
     method: "DELETE",
   }),
