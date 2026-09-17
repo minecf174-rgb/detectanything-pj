@@ -19,11 +19,14 @@ class DatasetRepository:
         )
         return (current or 0) + 1
 
-    def latest_approved_annotation_sets(self, project_id: int) -> list[AnnotationSet]:
+    def latest_approved_annotation_sets(
+        self, project_id: int, image_ids: list[int] | None = None
+    ) -> list[AnnotationSet]:
+        image_query = select(Image).where(Image.project_id == project_id, Image.status != "ARCHIVED")
+        if image_ids is not None:
+            image_query = image_query.where(Image.image_id.in_(image_ids))
         images = self.db.scalars(
-            select(Image)
-            .where(Image.project_id == project_id, Image.status != "ARCHIVED")
-            .order_by(Image.image_id)
+            image_query.order_by(Image.image_id)
         )
         selected: list[AnnotationSet] = []
         for image in images:
@@ -37,7 +40,7 @@ class DatasetRepository:
                 .order_by(AnnotationSet.revision.desc())
                 .limit(1)
             )
-            if annotation_set is not None:
+            if annotation_set is not None and annotation_set.annotations:
                 selected.append(annotation_set)
         return selected
 

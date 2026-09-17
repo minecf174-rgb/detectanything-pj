@@ -34,13 +34,20 @@ async def import_yolo_dataset(
     project_id: int,
     class_names: str | None = None,
     class_indexes: str | None = None,
-    max_images: int | None = None,
+    max_labeled_images: int | None = None,
+    import_remaining_images: bool = True,
     file: UploadFile = File(...),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
     return await ImageService(db).import_yolo_zip(
-        project_id, current_user, file, class_names, max_images, class_indexes
+        project_id,
+        current_user,
+        file,
+        class_names,
+        max_labeled_images,
+        class_indexes,
+        import_remaining_images,
     )
 
 

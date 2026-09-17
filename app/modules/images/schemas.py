@@ -29,6 +29,8 @@ class YoloImportRead(BaseModel):
 class ArchiveInspectionRead(BaseModel):
     archive_type: Literal["YOLO", "IMAGES"]
     image_count: int
+    labeled_image_count: int
+    unlabeled_image_count: int
     class_names: list[str]
 
 

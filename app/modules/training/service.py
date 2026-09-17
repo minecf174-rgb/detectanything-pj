@@ -46,7 +46,7 @@ class TrainingService:
         if data.base_model and data.base_model.startswith("model:"):
             source_model_id = int(data.base_model.removeprefix("model:"))
             source_model = self.db.get(Model, source_model_id)
-            if source_model is None:
+            if source_model is None or source_model.deleted_at is not None:
                 raise HTTPException(status_code=404, detail="Source model not found")
             if source_model.project_id != data.project_id:
                 raise HTTPException(status_code=400, detail="Source model belongs to another project")
@@ -142,7 +142,7 @@ class TrainingService:
             return base_model
         source_model_id = int(base_model.removeprefix("model:"))
         source_model = self.db.get(Model, source_model_id)
-        if source_model is None or source_model.project_id != run.project_id:
+        if source_model is None or source_model.deleted_at is not None or source_model.project_id != run.project_id:
             raise HTTPException(status_code=400, detail="Invalid source model")
         source_path = self.storage.root / source_model.weights_object_key
         if not source_path.exists():

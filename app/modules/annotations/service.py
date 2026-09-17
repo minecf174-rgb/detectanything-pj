@@ -56,6 +56,8 @@ class AnnotationService:
         rows = self.db.execute(
             select(
                 AnnotationSet.image_id,
+                AnnotationSet.annotation_set_id,
+                AnnotationSet.source_type,
                 AnnotationSet.status,
                 AnnotationSet.revision,
                 func.count(Annotation.annotation_id).label("box_count"),
@@ -67,10 +69,12 @@ class AnnotationService:
             .order_by(AnnotationSet.image_id, AnnotationSet.revision.desc())
         )
         latest_by_image: dict[int, dict] = {}
-        for image_id, status, _revision, box_count in rows:
+        for image_id, annotation_set_id, source_type, status, _revision, box_count in rows:
             if image_id not in latest_by_image:
                 latest_by_image[image_id] = {
                     "image_id": image_id,
+                    "annotation_set_id": annotation_set_id,
+                    "source_type": source_type,
                     "status": status,
                     "box_count": box_count,
                 }

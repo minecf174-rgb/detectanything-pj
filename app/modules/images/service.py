@@ -138,8 +138,9 @@ class ImageService:
         current_user: User,
         file: UploadFile,
         class_names: str | None = None,
-        max_images: int | None = None,
+        max_labeled_images: int | None = None,
         class_indexes: str | None = None,
+        import_remaining_images: bool = True,
     ):
         require_project_owner(self.db, current_user, project_id)
 
@@ -180,15 +181,32 @@ class ImageService:
                 ]
                 if not image_names:
                     image_names = [name for name in names if self._is_image_name(name)]
-                if max_images is not None:
-                    if max_images < 1:
-                        raise HTTPException(status_code=400, detail="max_images must be >= 1")
-                    image_names = image_names[:max_images]
+                if max_labeled_images is not None and max_labeled_images < 0:
+                    raise HTTPException(status_code=400, detail="max_labeled_images must be >= 0")
+
+                prepared_images: list[tuple[str, list[dict]]] = []
+                selected_labeled_images = 0
+                for image_name in image_names:
+                    label_name = self._matching_label_name(image_name, names)
+                    boxes = [] if label_name is None else self._read_yolo_label_file(
+                        archive.read(label_name).decode("utf-8"),
+                        classes_by_source_index,
+                    )
+                    include_labels = bool(boxes) and (
+                        max_labeled_images is None or selected_labeled_images < max_labeled_images
+                    )
+                    if include_labels:
+                        selected_labeled_images += 1
+                    if include_labels or import_remaining_images:
+                        prepared_images.append((image_name, boxes if include_labels else []))
+
+                if not prepared_images:
+                    raise HTTPException(status_code=400, detail="No labeled images matched the import settings")
 
                 imported_images = 0
                 imported_sets = 0
                 imported_boxes = 0
-                for image_name in image_names:
+                for image_name, boxes in prepared_images:
                     image_data = archive.read(image_name)
                     width, height = self._read_image_size(image_data)
                     suffix = Path(image_name).suffix.lower() or ".jpg"
@@ -205,13 +223,6 @@ class ImageService:
                     )
                     imported_images += 1
 
-                    label_name = self._matching_label_name(image_name, names)
-                    if label_name is None:
-                        continue
-                    boxes = self._read_yolo_label_file(
-                        archive.read(label_name).decode("utf-8"),
-                        classes_by_source_index,
-                    )
                     if not boxes:
                         continue
 
@@ -274,9 +285,20 @@ class ImageService:
                 class_names = self._read_yolo_classes(archive, names, required=False) if is_yolo else []
                 if is_yolo and not class_names and label_names:
                     class_names = self._infer_yolo_classes_from_labels(archive, names)
+                labeled_image_count = 0
+                if is_yolo:
+                    for image_name in image_names:
+                        label_name = self._matching_label_name(image_name, names)
+                        if label_name is None:
+                            continue
+                        label_text = archive.read(label_name).decode("utf-8")
+                        if self._label_file_has_annotations(label_text):
+                            labeled_image_count += 1
                 return {
                     "archive_type": "YOLO" if is_yolo else "IMAGES",
                     "image_count": len(image_names),
+                    "labeled_image_count": labeled_image_count,
+                    "unlabeled_image_count": len(image_names) - labeled_image_count,
                     "class_names": class_names,
                 }
         except BadZipFile as exc:
@@ -555,6 +577,18 @@ class ImageService:
                 }
             )
         return boxes
+
+    def _label_file_has_annotations(self, text: str) -> bool:
+        for line in text.splitlines():
+            parts = line.strip().split()
+            if len(parts) < 5:
+                continue
+            try:
+                [float(value) for value in parts[:5]]
+            except ValueError:
+                continue
+            return True
+        return False
 
     def _clamp(self, value: float) -> float:
         return max(0.0, min(1.0, value))

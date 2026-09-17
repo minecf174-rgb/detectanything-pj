@@ -22,9 +22,16 @@ class DatasetService:
     def create_dataset_version(self, data: DatasetVersionCreate, current_user: User):
         require_project_owner(self.db, current_user, data.project_id)
 
-        annotation_sets = self.repository.latest_approved_annotation_sets(data.project_id)
+        annotation_sets = self.repository.latest_approved_annotation_sets(data.project_id, data.image_ids)
+        if data.image_ids is not None:
+            available_ids = {annotation_set.image_id for annotation_set in annotation_sets}
+            if set(data.image_ids) != available_ids:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Selected images must be active images in this project with approved labels",
+                )
         if not annotation_sets:
-            raise HTTPException(status_code=400, detail="No approved annotations found")
+            raise HTTPException(status_code=400, detail="No approved annotations with labels found")
 
         version_number = self.repository.next_version_number(data.project_id)
         dataset_version = self.repository.create_version(

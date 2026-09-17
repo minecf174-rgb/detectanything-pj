@@ -32,6 +32,7 @@ class Model(Base):
     recall: Mapped[float | None] = mapped_column(Float)
     map50: Mapped[float | None] = mapped_column(Float)
     map50_95: Mapped[float | None] = mapped_column(Float)
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     project: Mapped["Project"] = relationship(back_populates="models")

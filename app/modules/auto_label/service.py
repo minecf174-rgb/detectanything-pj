@@ -35,7 +35,7 @@ class AutoLabelService:
                 raise HTTPException(status_code=404, detail="YOLO26 pose pretrained weights are not installed")
         else:
             model = self.db.get(Model, data.model_id)
-            if model is None:
+            if model is None or model.deleted_at is not None:
                 raise HTTPException(status_code=404, detail="Model not found")
             if model.project_id != data.project_id:
                 raise HTTPException(status_code=400, detail="Model belongs to another project")
@@ -60,7 +60,10 @@ class AutoLabelService:
                     .where(
                         AnnotationSet.image_id.in_(unique_image_ids),
                         or_(
-                            AnnotationSet.status == "APPROVED",
+                            and_(
+                                AnnotationSet.status == "APPROVED",
+                                AnnotationSet.annotations.any(),
+                            ),
                             and_(
                                 AnnotationSet.source_type == "MODEL",
                                 AnnotationSet.status == "PENDING",
@@ -337,7 +340,7 @@ class AutoLabelService:
         if job.base_model == "yolo26n-pose.pt":
             return self._pretrained_pose_path()
         model = self.db.get(Model, job.model_id)
-        if model is None:
+        if model is None or model.deleted_at is not None:
             raise HTTPException(status_code=404, detail="Model not found")
         return Path(self.storage_root) / model.weights_object_key
 

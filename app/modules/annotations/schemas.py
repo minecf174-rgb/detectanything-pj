@@ -107,5 +107,7 @@ class AnnotationSetRead(BaseModel):
 
 class ImageAnnotationStatusRead(BaseModel):
     image_id: int
+    annotation_set_id: int
+    source_type: AnnotationSourceType
     status: AnnotationStatus
     box_count: int

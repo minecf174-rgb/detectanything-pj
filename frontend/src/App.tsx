@@ -4,12 +4,16 @@ import {
   BarChart3,
   Boxes,
   Check,
+  ChevronDown,
   ChevronLeft,
   ChevronRight,
+  CircleAlert,
   CircleDot,
+  Copy,
   Database,
   Download,
   Eye,
+  Filter,
   Image as ImageIcon,
   Layers3,
   MoreHorizontal,
@@ -74,9 +78,22 @@ type ImageFrame = {
 
 type TestImage = {
   key: string;
+  fingerprint: string;
   file: File;
   url: string;
 };
+
+type TestRunProgress = {
+  processed: number;
+  total: number;
+  running: boolean;
+  elapsedMs: number;
+  currentFrom: number;
+  currentTo: number;
+  currentImageIndex: number | null;
+};
+
+type TestResultFilter = "all" | "detected" | "no-detections" | "failed";
 
 type EditMode = "move" | "nw" | "ne" | "sw" | "se";
 
@@ -239,6 +256,7 @@ export function App() {
   const [imageAnnotationStatuses, setImageAnnotationStatuses] = useState<ImageAnnotationStatus[]>([]);
   const [annotations, setAnnotations] = useState<AnnotationSet[]>([]);
   const [datasets, setDatasets] = useState<DatasetVersion[]>([]);
+  const [datasetSelectionOpen, setDatasetSelectionOpen] = useState(false);
   const [runs, setRuns] = useState<TrainingRun[]>([]);
   const [models, setModels] = useState<ModelItem[]>([]);
   const [autoJobs, setAutoJobs] = useState<AutoLabelJob[]>([]);
@@ -257,6 +275,7 @@ export function App() {
   const [editingClassName, setEditingClassName] = useState("");
   const [editingClassColor, setEditingClassColor] = useState("#16a34a");
   const [importLimit, setImportLimit] = useState("");
+  const [importRemainingImages, setImportRemainingImages] = useState(true);
   const [importClassMode, setImportClassMode] = useState<"all" | "selected">("all");
   const [importClassIndexes, setImportClassIndexes] = useState("");
   const [importClassNames, setImportClassNames] = useState("");
@@ -265,6 +284,7 @@ export function App() {
   const [imageSelectorOpen, setImageSelectorOpen] = useState(false);
   const [datasetToView, setDatasetToView] = useState<DatasetVersion | null>(null);
   const [modelDownloadFormats, setModelDownloadFormats] = useState<Record<number, ModelDownloadFormat>>({});
+  const [modelActionsOpenId, setModelActionsOpenId] = useState<number | null>(null);
   const [draftBoxes, setDraftBoxes] = useState<DraftBox[]>([]);
   const [poseCollecting, setPoseCollecting] = useState(false);
   const [posePoints, setPosePoints] = useState<PosePoint[]>([]);
@@ -278,13 +298,16 @@ export function App() {
   const [poseEditVisibilityMode, setPoseEditVisibilityMode] = useState<PoseVisibilityMode>("visible");
   const [annotationImageId, setAnnotationImageId] = useState<number | null>(null);
   const [autoLabelResults, setAutoLabelResults] = useState<AutoLabelResult[] | null>(null);
+  const [autoLabelResultsModelName, setAutoLabelResultsModelName] = useState("");
   const [reviewToOpen, setReviewToOpen] = useState<AnnotationSet | null>(null);
   const [trainingSetupOpen, setTrainingSetupOpen] = useState(false);
   const [trainingSettings, setTrainingSettings] = useState<YoloTrainingSettings>(defaultTrainingSettings);
   const [selectedAutoLabelModelId, setSelectedAutoLabelModelId] = useState<number | "pose-pretrained" | null>(null);
   const [selectedTestModelId, setSelectedTestModelId] = useState<number | "pose-pretrained" | null>(null);
   const [testImages, setTestImages] = useState<TestImage[]>([]);
-  const [testPredictions, setTestPredictions] = useState<ModelPrediction[]>([]);
+  const [testPredictions, setTestPredictions] = useState<(ModelPrediction | null)[]>([]);
+  const [testFailures, setTestFailures] = useState<Record<number, string>>({});
+  const [testProgress, setTestProgress] = useState<TestRunProgress>({ processed: 0, total: 0, running: false, elapsedMs: 0, currentFrom: 0, currentTo: 0, currentImageIndex: null });
   const [testConfidenceThreshold, setTestConfidenceThreshold] = useState(0.25);
   const [imageManagerOpen, setImageManagerOpen] = useState(false);
   const [managedImages, setManagedImages] = useState<ImageItem[]>([]);
@@ -313,19 +336,18 @@ export function App() {
     () => Object.fromEntries(classes.map((labelClass) => [labelClass.class_id, labelClass.color])),
     [classes],
   );
-  const pendingReviewImageIds = useMemo(() => new Set(
-    autoJobs.flatMap((job) => job.items)
-      .filter((item) => item.status === "COMPLETED" && item.annotation_set_id != null)
-      .map((item) => item.image_id),
-  ), [autoJobs]);
-  const pendingProjectAnnotationSetIds = useMemo(() => {
-    const pendingImages = new Set(
-      imageAnnotationStatuses.filter((status) => status.status === "PENDING").map((status) => status.image_id),
-    );
-    return [...new Set(autoJobs.flatMap((job) => job.items)
-      .filter((item) => item.annotation_set_id != null && pendingImages.has(item.image_id))
-      .map((item) => item.annotation_set_id as number))];
-  }, [autoJobs, imageAnnotationStatuses]);
+  const pendingImageAnnotationStatuses = useMemo(
+    () => imageAnnotationStatuses.filter((status) => status.status === "PENDING"),
+    [imageAnnotationStatuses],
+  );
+  const pendingReviewImageIds = useMemo(
+    () => new Set(pendingImageAnnotationStatuses.map((status) => status.image_id)),
+    [pendingImageAnnotationStatuses],
+  );
+  const pendingProjectAnnotationSetIds = useMemo(
+    () => pendingImageAnnotationStatuses.map((status) => status.annotation_set_id),
+    [pendingImageAnnotationStatuses],
+  );
 
   useEffect(() => {
     if (!projectActionsOpen) return;
@@ -342,12 +364,77 @@ export function App() {
       window.removeEventListener("keydown", closeOnEscape);
     };
   }, [projectActionsOpen]);
+
+  useEffect(() => {
+    if (modelActionsOpenId == null) return;
+    const closeOutside = (event: MouseEvent) => {
+      const target = event.target;
+      if (!(target instanceof Element) || !target.closest(`[data-model-actions="${modelActionsOpenId}"]`)) {
+        setModelActionsOpenId(null);
+      }
+    };
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setModelActionsOpenId(null);
+    };
+    document.addEventListener("mousedown", closeOutside);
+    window.addEventListener("keydown", closeOnEscape);
+    return () => {
+      document.removeEventListener("mousedown", closeOutside);
+      window.removeEventListener("keydown", closeOnEscape);
+    };
+  }, [modelActionsOpenId]);
   const latestDataset = datasets[datasets.length - 1] ?? null;
   const selectedDataset = datasets.find((dataset) => dataset.version_id === selectedDatasetVersionId) ?? latestDataset;
   const latestModel = models[models.length - 1] ?? null;
   const selectedImageIndex = selectedImageId
     ? images.findIndex((image) => image.image_id === selectedImageId) + 1
     : 0;
+
+  const navigateSelectedImage = (direction: -1 | 1) => {
+    if (images.length === 0) return;
+    const currentIndex = selectedImageId == null
+      ? (direction === 1 ? -1 : images.length)
+      : images.findIndex((image) => image.image_id === selectedImageId);
+    const nextImage = images[currentIndex + direction];
+    if (nextImage) setSelectedImageId(nextImage.image_id);
+  };
+
+  const copyPreviousLabels = async () => {
+    if (selectedImageIndex <= 1 || busy || editableSet || poseCollecting) return;
+    const previousImage = images[selectedImageIndex - 2];
+    if (!previousImage) return;
+    setBusy(true);
+    setStatus("Loading labels from previous image...");
+    try {
+      const previousSets = await api.listAnnotations(previousImage.image_id);
+      const sourceSet = [...previousSets].reverse().find(
+        (annotationSet) => annotationSet.status !== "REJECTED" && annotationSet.annotations.length > 0,
+      );
+      if (!sourceSet) {
+        setStatus("The previous image has no labels to copy");
+        return;
+      }
+      const copiedBoxes: DraftBox[] = sourceSet.annotations.map((box) => ({
+        class_id: box.class_id,
+        x_min: box.x_min,
+        y_min: box.y_min,
+        x_max: box.x_max,
+        y_max: box.y_max,
+        keypoints: box.keypoints
+          ? [...box.keypoints]
+            .sort((left, right) => left.keypoint_index - right.keypoint_index)
+            .map(({ x, y, visibility }) => ({ x, y, visibility }))
+          : undefined,
+      }));
+      setDraftBoxes(copiedBoxes);
+      setSelectedClassId(copiedBoxes[0]?.class_id ?? selectedClassId);
+      setStatus(`Copied ${copiedBoxes.length} label${copiedBoxes.length === 1 ? "" : "s"} from image ${selectedImageIndex - 1}. Adjust and save.`);
+    } catch (error) {
+      setStatus(errorMessage(error));
+    } finally {
+      setBusy(false);
+    }
+  };
 
   const loadProjects = useCallback(async () => {
     const nextProjects = await api.listProjects();
@@ -374,6 +461,7 @@ export function App() {
   }, [loadProjects]);
 
   const clearProjectState = () => {
+    setDatasetSelectionOpen(false);
     projectRequestId.current += 1;
     setClasses([]);
     setImages([]);
@@ -404,8 +492,13 @@ export function App() {
     setTrainingSetupOpen(false);
     setSelectedAutoLabelModelId(null);
     setSelectedTestModelId(null);
-    setTestImages([]);
+    setTestImages((current) => {
+      current.forEach((image) => URL.revokeObjectURL(image.url));
+      return [];
+    });
     setTestPredictions([]);
+    setTestFailures({});
+    setTestProgress({ processed: 0, total: 0, running: false, elapsedMs: 0, currentFrom: 0, currentTo: 0, currentImageIndex: null });
     setTestConfidenceThreshold(0.25);
     setWorkspaceSection("annotate");
     setImageManagerOpen(false);
@@ -413,6 +506,7 @@ export function App() {
     setPendingImportArchive(null);
     setArchiveInspection(null);
     setDatasetToView(null);
+    setModelActionsOpenId(null);
     setManagedImages([]);
     setSelectedManagedImageIds(new Set());
   };
@@ -532,10 +626,6 @@ export function App() {
         : models[models.length - 1]?.model_id ?? null
     ));
   }, [models]);
-
-  useEffect(() => () => {
-    testImages.forEach((image) => URL.revokeObjectURL(image.url));
-  }, [testImages]);
 
   useEffect(() => {
     setSelectedDatasetVersionId((current) => (
@@ -722,7 +812,8 @@ export function App() {
           if (inspection.archive_type === "YOLO") {
             setPendingImportArchive(file);
             setArchiveInspection(inspection);
-            setImportLimit("");
+            setImportLimit(String(inspection.labeled_image_count));
+            setImportRemainingImages(true);
             setImportClassMode("all");
             setImportClassIndexes("");
             setImportClassNames(inspection.class_names.join(", "));
@@ -741,23 +832,36 @@ export function App() {
 
   const confirmYoloImport = () => {
     const file = pendingImportArchive;
-    if (!file || !selectedProjectId) return;
+    if (!file || !selectedProjectId || !archiveInspection) return;
     const indexValue = importClassIndexes.trim();
     const importAllClasses = importClassMode === "all";
     if (!importAllClasses && !indexValue) {
       setStatus("Enter at least one YOLO class index");
       return;
     }
+    const labelLimit = Number(importLimit);
+    if (
+      !Number.isInteger(labelLimit)
+      || labelLimit < 0
+      || labelLimit > archiveInspection.labeled_image_count
+    ) {
+      setStatus(`Label count must be between 0 and ${archiveInspection.labeled_image_count}`);
+      return;
+    }
+    if (!importRemainingImages && labelLimit === 0) {
+      setStatus("Choose at least one labeled image or import the remaining images without labels");
+      return;
+    }
     const selectedIndexes = importAllClasses ? undefined : indexValue;
     const selectedClassNames = importClassNames.trim() || undefined;
     void runAction("Import YOLO dataset", async () => {
-      const limit = Number(importLimit);
       const result = await api.importYoloZip(
         selectedProjectId,
         file,
         selectedClassNames,
-        Number.isFinite(limit) && limit > 0 ? limit : null,
+        labelLimit,
         selectedIndexes,
+        importRemainingImages,
       );
       setStatus(
         `Imported ${result.imported_images} images, ${result.imported_annotation_sets} labels, ${result.imported_boxes} boxes`,
@@ -885,11 +989,12 @@ export function App() {
     });
   };
 
-  const createAndBuildDataset = () => {
+  const createAndBuildDataset = (imageIds: number[]) => {
     if (!selectedProjectId) return;
     void runAction("Create and build dataset version", async () => {
       const dataset = await api.createDataset({
         project_id: selectedProjectId,
+        image_ids: imageIds,
         preprocess_config: { resize: { width: 640, height: 640 } },
         augmentation_config: { horizontal_flip: true },
         default_split: "TRAIN",
@@ -897,6 +1002,7 @@ export function App() {
       });
       await api.buildYolo(dataset.version_id);
       setSelectedDatasetVersionId(dataset.version_id);
+      setDatasetSelectionOpen(false);
     });
   };
 
@@ -905,6 +1011,19 @@ export function App() {
     void runAction("Delete dataset version", async () => {
       await api.deleteDataset(dataset.version_id);
       setDatasetToView(null);
+    });
+  };
+
+  const deleteModel = (model: ModelItem) => {
+    setModelActionsOpenId(null);
+    if (!window.confirm(`Delete Model v${model.version}? Its model files and exported formats will be permanently removed.`)) return;
+    void runAction("Delete model", async () => {
+      await api.deleteModel(model.model_id);
+      setModelDownloadFormats((current) => {
+        const next = { ...current };
+        delete next[model.model_id];
+        return next;
+      });
     });
   };
 
@@ -941,34 +1060,198 @@ export function App() {
   const chooseTestImages = (fileList: FileList | null) => {
     const files = Array.from(fileList ?? []);
     if (files.length === 0) return;
-    setTestImages(files.map((file, index) => ({
-      key: `${file.name}-${file.size}-${file.lastModified}-${index}`,
-      file,
-      url: URL.createObjectURL(file),
-    })));
-    setTestPredictions([]);
+    const knownFingerprints = new Set(testImages.map((image) => image.fingerprint));
+    const added: TestImage[] = [];
+    let duplicateCount = 0;
+    files.forEach((file) => {
+      const fingerprint = `${file.name}-${file.size}-${file.lastModified}`;
+      if (knownFingerprints.has(fingerprint)) {
+        duplicateCount += 1;
+        return;
+      }
+      knownFingerprints.add(fingerprint);
+      added.push({
+        key: `${fingerprint}-${crypto.randomUUID()}`,
+        fingerprint,
+        file,
+        url: URL.createObjectURL(file),
+      });
+    });
+    if (added.length === 0) {
+      setStatus(`Skipped ${duplicateCount} duplicate image${duplicateCount === 1 ? "" : "s"}`);
+      return;
+    }
+    setTestImages((current) => [...current, ...added]);
+    setTestPredictions((current) => [
+      ...Array.from({ length: testImages.length }, (_, index) => current[index] ?? null),
+      ...Array<ModelPrediction | null>(added.length).fill(null),
+    ]);
+    setTestProgress((current) => ({
+      ...current,
+      total: testImages.length + added.length,
+      running: false,
+      currentFrom: 0,
+      currentTo: 0,
+      currentImageIndex: null,
+    }));
+    setStatus(`Added ${added.length} test image${added.length === 1 ? "" : "s"}${duplicateCount > 0 ? ` · skipped ${duplicateCount} duplicate${duplicateCount === 1 ? "" : "s"}` : ""}`);
   };
 
-  const runModelTest = () => {
+  const clearTestImages = () => {
+    testImages.forEach((image) => URL.revokeObjectURL(image.url));
+    setTestImages([]);
+    setTestPredictions([]);
+    setTestFailures({});
+    setTestProgress({ processed: 0, total: 0, running: false, elapsedMs: 0, currentFrom: 0, currentTo: 0, currentImageIndex: null });
+    setStatus("Cleared test images");
+  };
+
+  const removeTestImage = (imageIndex: number) => {
+    URL.revokeObjectURL(testImages[imageIndex].url);
+    const nextImages = testImages.filter((_, index) => index !== imageIndex);
+    const nextPredictions = testPredictions.filter((_, index) => index !== imageIndex);
+    const nextFailures = Object.fromEntries(
+      Object.entries(testFailures).flatMap(([indexText, message]) => {
+        const index = Number(indexText);
+        if (index === imageIndex) return [];
+        return [[index > imageIndex ? index - 1 : index, message]];
+      }),
+    );
+    setTestImages(nextImages);
+    setTestPredictions(nextPredictions);
+    setTestFailures(nextFailures);
+    setTestProgress({
+      processed: nextPredictions.filter(Boolean).length + Object.keys(nextFailures).length,
+      total: nextImages.length,
+      running: false,
+      elapsedMs: 0,
+      currentFrom: 0,
+      currentTo: 0,
+      currentImageIndex: null,
+    });
+  };
+
+  const changeTestModel = (modelId: number | "pose-pretrained" | null) => {
+    setSelectedTestModelId(modelId);
+    setTestPredictions([]);
+    setTestFailures({});
+    setTestProgress({ processed: 0, total: testImages.length, running: false, elapsedMs: 0, currentFrom: 0, currentTo: 0, currentImageIndex: null });
+  };
+
+  const changeTestThreshold = (value: number) => {
+    setTestConfidenceThreshold(value);
+    setTestPredictions([]);
+    setTestFailures({});
+    setTestProgress({ processed: 0, total: testImages.length, running: false, elapsedMs: 0, currentFrom: 0, currentTo: 0, currentImageIndex: null });
+  };
+
+  const runModelTest = (mode: "untested" | "all" = "all") => {
     if (!selectedTestModelId || testImages.length === 0 || !selectedProjectId) return;
+    const targetIndexes = testImages.flatMap((_, index) => (
+      mode === "all" || (testPredictions[index] == null && testFailures[index] == null) ? [index] : []
+    ));
+    if (targetIndexes.length === 0) {
+      setStatus("All selected images have already been tested");
+      return;
+    }
     void runAction("Run model test", async () => {
       const batchSize = 100;
-      const results: ModelPrediction[] = [];
-      setTestPredictions([]);
+      const results: (ModelPrediction | null)[] = mode === "all"
+        ? Array(testImages.length).fill(null)
+        : Array.from({ length: testImages.length }, (_, index) => testPredictions[index] ?? null);
+      const failures: Record<number, string> = mode === "all" ? {} : { ...testFailures };
+      targetIndexes.forEach((index) => { delete failures[index]; });
+      const startedAt = performance.now();
+      let processed = mode === "all"
+        ? 0
+        : results.filter(Boolean).length + Object.keys(failures).length;
+      let currentFrom = targetIndexes[0] + 1;
+      let currentTo = currentFrom;
+      let currentImageIndex: number | null = targetIndexes[0];
+      const resultDisplayDelay = targetIndexes.length <= 30 ? 45 : targetIndexes.length <= 100 ? 12 : 0;
+      setTestPredictions([...results]);
+      setTestFailures({ ...failures });
+      setTestProgress({ processed, total: testImages.length, running: true, elapsedMs: 0, currentFrom, currentTo, currentImageIndex });
 
-      for (let offset = 0; offset < testImages.length; offset += batchSize) {
-        const files = testImages.slice(offset, offset + batchSize).map((image) => image.file);
-        setStatus(`Running test batch ${Math.floor(offset / batchSize) + 1}/${Math.ceil(testImages.length / batchSize)}`);
-        const prediction = selectedTestModelId === "pose-pretrained"
-          ? await api.predictPretrainedPoseBatch(selectedProjectId, files, testConfidenceThreshold)
-          : await api.predictModelBatch(selectedTestModelId, files, testConfidenceThreshold);
-        results.push(...prediction.results);
+      const predictFiles = (files: File[], onResult: (index: number, result: ModelPrediction) => void | Promise<void>) => selectedTestModelId === "pose-pretrained"
+        ? api.streamPretrainedPosePredictions(selectedProjectId, files, testConfidenceThreshold, (event) => onResult(event.index, event.result))
+        : api.streamModelPredictions(selectedTestModelId, files, testConfidenceThreshold, (event) => onResult(event.index, event.result));
+      const publishProgress = () => {
         setTestPredictions([...results]);
+        setTestFailures({ ...failures });
+        setTestProgress({
+          processed,
+          total: testImages.length,
+          running: processed < testImages.length,
+          elapsedMs: performance.now() - startedAt,
+          currentFrom,
+          currentTo,
+          currentImageIndex,
+        });
+      };
+
+      try {
+        for (let offset = 0; offset < targetIndexes.length; offset += batchSize) {
+          const batchIndexes = targetIndexes.slice(offset, offset + batchSize);
+          const batch = batchIndexes.map((index) => testImages[index]);
+          const files = batch.map((image) => image.file);
+          currentFrom = batchIndexes[0] + 1;
+          currentTo = currentFrom;
+          currentImageIndex = batchIndexes[0];
+          publishProgress();
+          setStatus(`Testing ${offset + 1}-${Math.min(offset + batch.length, targetIndexes.length)} of ${targetIndexes.length}`);
+          try {
+            await predictFiles(files, async (index, result) => {
+              const resultIndex = batchIndexes[index];
+              if (results[resultIndex] == null) processed += 1;
+              results[resultIndex] = result;
+              const nextTarget = targetIndexes[offset + index + 1];
+              currentFrom = nextTarget == null ? resultIndex + 1 : nextTarget + 1;
+              currentTo = currentFrom;
+              currentImageIndex = nextTarget ?? null;
+              publishProgress();
+              if (resultDisplayDelay > 0) await sleep(resultDisplayDelay);
+            });
+          } catch {
+            for (let index = 0; index < batch.length; index += 1) {
+              const resultIndex = batchIndexes[index];
+              if (results[resultIndex] != null) continue;
+              currentFrom = resultIndex + 1;
+              currentTo = resultIndex + 1;
+              currentImageIndex = resultIndex;
+              publishProgress();
+              try {
+                await predictFiles([batch[index].file], (_streamIndex, result) => {
+                  results[resultIndex] = result;
+                });
+                if (!results[resultIndex]) failures[resultIndex] = "No result returned";
+              } catch (error) {
+                failures[resultIndex] = errorMessage(error);
+              }
+              processed += 1;
+              publishProgress();
+            }
+          }
+        }
+      } finally {
+        setTestProgress({
+          processed,
+          total: testImages.length,
+          running: false,
+          elapsedMs: performance.now() - startedAt,
+          currentFrom: 0,
+          currentTo: 0,
+          currentImageIndex: null,
+        });
       }
     }, { refresh: false });
   };
 
   const showAutoLabelResults = async (job: AutoLabelJob) => {
+    const sourceModel = models.find((model) => model.model_id === job.model_id);
+    setAutoLabelResultsModelName(job.base_model
+      ? "YOLO26 Pose pretrained"
+      : sourceModel ? `Model v${sourceModel.version}` : `Model #${job.model_id}`);
     const resultItems = await Promise.all(job.items.map(async (item) => {
       const image = images.find((candidate) => candidate.image_id === item.image_id);
       if (!image) return null;
@@ -1105,6 +1388,22 @@ export function App() {
     const action = mode === "accept" ? "Accept" : "Reject";
     if (!window.confirm(`${action} all ${pendingIds.length} pending auto-label results?`)) return;
     void runAction(`${action} ${pendingIds.length} auto-label results`, async () => {
+      if (mode === "accept") await api.acceptAnnotationsBulk(pendingIds);
+      else await api.rejectAnnotationsBulk(pendingIds);
+      closeReviewEditor();
+    });
+  };
+
+  const reviewSelectedProjectSuggestions = (imageIds: number[], mode: "accept" | "reject") => {
+    const selectedImageIds = new Set(imageIds);
+    const selectedPendingStatuses = pendingImageAnnotationStatuses.filter(
+      (status) => selectedImageIds.has(status.image_id),
+    );
+    const pendingIds = selectedPendingStatuses.map((status) => status.annotation_set_id);
+    if (pendingIds.length === 0) return;
+    const action = mode === "accept" ? "Accept" : "Reject";
+    if (!window.confirm(`${action} auto-label results for ${selectedPendingStatuses.length} selected images?`)) return;
+    void runAction(`${action} ${selectedPendingStatuses.length} selected auto-label results`, async () => {
       if (mode === "accept") await api.acceptAnnotationsBulk(pendingIds);
       else await api.rejectAnnotationsBulk(pendingIds);
       closeReviewEditor();
@@ -1440,6 +1739,49 @@ export function App() {
             onPoseEditPoint={(point) => updateSelectedPoseKeypoint(point, poseEditVisibilityMode === "visible" ? 2 : 1)}
             busy={busy}
           />
+          {selectedImage && (
+            <nav className="annotation-image-navigation" aria-label="Navigate annotation images">
+              <button
+                className="icon-button"
+                onClick={() => navigateSelectedImage(-1)}
+                disabled={busy || selectedImageIndex <= 1}
+                title="Previous image"
+                aria-label="Previous image"
+                type="button"
+              ><ChevronLeft size={20} /></button>
+              <button
+                className="annotation-image-position"
+                onClick={() => setImageSelectorOpen(true)}
+                disabled={busy}
+                title="Open image selector"
+                type="button"
+              >Image {selectedImageIndex} of {images.length}</button>
+              <button
+                className="annotation-copy-previous"
+                onClick={() => void copyPreviousLabels()}
+                disabled={
+                  busy
+                  || selectedImageIndex <= 1
+                  || !!editableSet
+                  || poseCollecting
+                  || draftBoxes.length > 0
+                  || visibleAnnotations.some((annotationSet) => (
+                    annotationSet.status !== "REJECTED" && annotationSet.annotations.length > 0
+                  ))
+                }
+                title={selectedImageIndex <= 1 ? "No previous image" : "Copy labels from the previous image as an editable draft"}
+                type="button"
+              ><Copy size={17} /> Copy previous labels</button>
+              <button
+                className="icon-button"
+                onClick={() => navigateSelectedImage(1)}
+                disabled={busy || selectedImageIndex >= images.length}
+                title="Next image"
+                aria-label="Next image"
+                type="button"
+              ><ChevronRight size={20} /></button>
+            </nav>
+          )}
           {editableSet && (
             <div className="review-editor">
               <div className="review-editor-summary">
@@ -1550,7 +1892,7 @@ export function App() {
           </Panel>
           <Panel title="Dataset">
             <span className="panel-note">Save approved labels as a fixed training snapshot.</span>
-            <button className="primary" onClick={createAndBuildDataset} disabled={!selectedProjectId || images.length === 0 || busy}><Database size={16} /> Create & Build version</button>
+            <button className="primary" onClick={() => setDatasetSelectionOpen(true)} disabled={!selectedProjectId || images.length === 0 || busy}><Database size={16} /> Create & Build version</button>
             <Metric label="Versions" value={datasets.length} />
             <Metric label="Latest" value={latestDataset ? `v${latestDataset.version_number}` : "-"} />
           </Panel>
@@ -1591,7 +1933,17 @@ export function App() {
                   <div><strong>Model v{model.version}</strong><span>Trained artifact</span></div>
                   <Metric label="mAP50" value={formatMetric(model.map50)} />
                   <label className="model-format-field"><span>Format</span><select value={modelDownloadFormats[model.model_id] ?? "pt"} onChange={(event) => setModelDownloadFormats((current) => ({ ...current, [model.model_id]: event.target.value as ModelDownloadFormat }))}><option value="pt">PyTorch (.pt)</option><option value="onnx">ONNX (.onnx)</option><option value="torchscript">TorchScript (.torchscript)</option></select></label>
-                  <button onClick={() => { const format = modelDownloadFormats[model.model_id] ?? "pt"; void download("Download model", () => api.downloadModel(model.model_id, format), `model-v${model.version}.${format === "torchscript" ? "torchscript" : format}`); }} disabled={busy}><Download size={16} /> Download</button>
+                  <div className="model-row-actions" data-model-actions={model.model_id}>
+                    <button onClick={() => { const format = modelDownloadFormats[model.model_id] ?? "pt"; void download("Download model", () => api.downloadModel(model.model_id, format), `model-v${model.version}.${format === "torchscript" ? "torchscript" : format}`); }} disabled={busy}><Download size={16} /> Download</button>
+                    <div className="model-actions-wrap">
+                      <button className="icon-button" onClick={() => setModelActionsOpenId((current) => current === model.model_id ? null : model.model_id)} aria-expanded={modelActionsOpenId === model.model_id} title={`Model v${model.version} actions`} type="button"><MoreHorizontal size={18} /></button>
+                      {modelActionsOpenId === model.model_id && (
+                        <div className="model-actions-menu">
+                          <button className="danger-item" onClick={() => deleteModel(model)} disabled={busy} type="button"><Trash2 size={15} /> Delete model</button>
+                        </div>
+                      )}
+                    </div>
+                  </div>
                 </article>
               ))}
               {models.length === 0 && <section className="section-panel section-empty"><Layers3 size={26} /><strong>No trained models yet</strong><span>Build a dataset and start a training run first.</span><button onClick={() => setWorkspaceSection("train")}><ChevronRight size={16} /> Go to training</button></section>}
@@ -1606,12 +1958,16 @@ export function App() {
           selectedModelId={selectedTestModelId}
           images={testImages}
           predictions={testPredictions}
+          failures={testFailures}
+          progress={testProgress}
           confidenceThreshold={testConfidenceThreshold}
           classColors={classColorById}
           busy={busy}
-          onModelChange={setSelectedTestModelId}
+          onModelChange={changeTestModel}
           onImagesChange={chooseTestImages}
-          onThresholdChange={setTestConfidenceThreshold}
+          onRemoveImage={removeTestImage}
+          onClearImages={clearTestImages}
+          onThresholdChange={changeTestThreshold}
           onRun={runModelTest}
         />}
           </div>
@@ -1629,6 +1985,7 @@ export function App() {
       {autoLabelResults && (
         <AutoLabelResultsModal
           results={autoLabelResults}
+          modelName={autoLabelResultsModelName}
           classColors={classColorById}
           onClose={() => setAutoLabelResults(null)}
           onOpen={openAutoLabelResult}
@@ -1675,12 +2032,23 @@ export function App() {
           classColors={classColorById}
           pendingImageIds={pendingReviewImageIds}
           annotationStatuses={imageAnnotationStatuses}
-          pendingAnnotationSetCount={pendingProjectAnnotationSetIds.length}
           busy={busy}
           onSelect={(imageId) => { setSelectedImageId(imageId); setImageSelectorOpen(false); }}
+          onReviewSelected={reviewSelectedProjectSuggestions}
           onAcceptAll={() => reviewAllProjectSuggestions("accept")}
           onRejectAll={() => reviewAllProjectSuggestions("reject")}
           onClose={() => setImageSelectorOpen(false)}
+        />
+      )}
+
+      {datasetSelectionOpen && (
+        <DatasetSelectionModal
+          images={images}
+          classColors={classColorById}
+          annotationStatuses={imageAnnotationStatuses}
+          busy={busy}
+          onClose={() => setDatasetSelectionOpen(false)}
+          onCreate={createAndBuildDataset}
         />
       )}
 
@@ -1689,11 +2057,13 @@ export function App() {
           file={pendingImportArchive}
           inspection={archiveInspection}
           limit={importLimit}
+          importRemainingImages={importRemainingImages}
           classMode={importClassMode}
           classIndexes={importClassIndexes}
           classNames={importClassNames}
           busy={busy}
           onLimitChange={setImportLimit}
+          onImportRemainingImagesChange={setImportRemainingImages}
           onClassModeChange={setImportClassMode}
           onClassIndexesChange={setImportClassIndexes}
           onClassNamesChange={setImportClassNames}
@@ -1737,9 +2107,9 @@ function ImageSelectorModal({
   classColors,
   pendingImageIds,
   annotationStatuses,
-  pendingAnnotationSetCount,
   busy,
   onSelect,
+  onReviewSelected,
   onAcceptAll,
   onRejectAll,
   onClose,
@@ -1749,9 +2119,9 @@ function ImageSelectorModal({
   classColors: Record<number, string>;
   pendingImageIds: Set<number>;
   annotationStatuses: ImageAnnotationStatus[];
-  pendingAnnotationSetCount: number;
   busy: boolean;
   onSelect: (imageId: number) => void;
+  onReviewSelected: (imageIds: number[], mode: "accept" | "reject") => void;
   onAcceptAll: () => void;
   onRejectAll: () => void;
   onClose: () => void;
@@ -1761,6 +2131,8 @@ function ImageSelectorModal({
   const initialStart = Math.floor(selectedIndex / batchSize) * batchSize;
   const [search, setSearch] = useState("");
   const [filter, setFilter] = useState<"all" | "labeled" | "needs-drawing" | "approved" | "pending" | "rejected">("all");
+  const [selectingMultiple, setSelectingMultiple] = useState(false);
+  const [selectedPendingImageIds, setSelectedPendingImageIds] = useState<Set<number>>(new Set());
   const [rangeStart, setRangeStart] = useState(initialStart);
   const [rangeEnd, setRangeEnd] = useState(Math.min(images.length, initialStart + batchSize));
   const [previews, setPreviews] = useState<Record<number, AnnotationSet | null>>({});
@@ -1799,6 +2171,11 @@ function ImageSelectorModal({
     }).length,
   }), [images, statusByImage]);
   const visible = filtered.slice(rangeStart, rangeEnd);
+  const visiblePendingImageIds = visible
+    .filter((image) => statusByImage.get(image.image_id)?.status === "PENDING")
+    .map((image) => image.image_id);
+  const allVisiblePendingSelected = visiblePendingImageIds.length > 0
+    && visiblePendingImageIds.every((imageId) => selectedPendingImageIds.has(imageId));
 
   useEffect(() => {
     let active = true;
@@ -1867,6 +2244,12 @@ function ImageSelectorModal({
     previousScrollHeightRef.current = 0;
   }, [rangeStart]);
 
+  useEffect(() => {
+    setSelectedPendingImageIds((current) => new Set(
+      [...current].filter((imageId) => statusByImage.get(imageId)?.status === "PENDING"),
+    ));
+  }, [statusByImage]);
+
   const updateSearch = (value: string) => {
     setSearch(value);
     setRangeStart(0);
@@ -1879,10 +2262,50 @@ function ImageSelectorModal({
     setRangeEnd(Math.min(batchSize, images.length));
   };
 
+  const startMultipleSelection = () => {
+    setSelectingMultiple(true);
+    setSelectedPendingImageIds(new Set());
+    updateFilter("pending");
+  };
+
+  const stopMultipleSelection = () => {
+    setSelectingMultiple(false);
+    setSelectedPendingImageIds(new Set());
+  };
+
+  const togglePendingImage = (imageId: number) => {
+    if (statusByImage.get(imageId)?.status !== "PENDING") return;
+    setSelectedPendingImageIds((current) => {
+      const next = new Set(current);
+      if (next.has(imageId)) next.delete(imageId);
+      else next.add(imageId);
+      return next;
+    });
+  };
+
+  const toggleVisiblePendingImages = () => {
+    setSelectedPendingImageIds((current) => {
+      const next = new Set(current);
+      if (allVisiblePendingSelected) visiblePendingImageIds.forEach((imageId) => next.delete(imageId));
+      else visiblePendingImageIds.forEach((imageId) => next.add(imageId));
+      return next;
+    });
+  };
+
   return <div className="results-modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>
     <section className="image-selector-modal" role="dialog" aria-modal="true" aria-label="Select image">
       <header className="image-manager-header"><div><h3>Select image</h3><p>Labels and model suggestions are shown on each preview.</p></div><button className="icon-button" onClick={onClose} title="Close"><X size={18} /></button></header>
-      <div className="image-selector-toolbar"><input value={search} onChange={(event) => updateSearch(event.target.value)} placeholder="Search filename or image number" /><span>{filtered.length} images</span></div>
+      <div className="image-selector-toolbar">
+        <input value={search} onChange={(event) => updateSearch(event.target.value)} placeholder="Search filename or image number" />
+        <div className="image-selector-toolbar-meta">
+          <span>{filtered.length} images</span>
+          {pendingImageIds.size > 0 && (
+            <button className={selectingMultiple ? "active" : ""} onClick={selectingMultiple ? stopMultipleSelection : startMultipleSelection} disabled={busy} type="button">
+              <Check size={16} /> {selectingMultiple ? "Done selecting" : "Select multiple"}
+            </button>
+          )}
+        </div>
+      </div>
       <div className="image-selector-filters" aria-label="Filter images">
         {([
           ["all", "All"], ["labeled", "Has labels"], ["needs-drawing", "Needs drawing"],
@@ -1908,8 +2331,19 @@ function ImageSelectorModal({
           const statusClass = displayStatus === "REJECTED" ? "rejected" : hasLabels ? displayStatus.toLowerCase() : "needs-drawing";
           const frame = getImageFrameForDimensions(image.width ?? 1, image.height ?? 1, 240 / 150);
           const selected = image.image_id === selectedImageId;
-          return <button ref={selected ? selectedRef : undefined} className={`image-selector-card ${selected ? "active" : ""} ${hasLabels ? "has-labels" : "needs-drawing"}`} aria-pressed={selected} onClick={() => onSelect(image.image_id)} key={image.image_id} type="button">
-            {selected && <span className="image-card-selected"><Check size={14} /> Selected image</span>}
+          const bulkSelected = selectedPendingImageIds.has(image.image_id);
+          const selectable = displayStatus === "PENDING";
+          return <button
+            ref={selected ? selectedRef : undefined}
+            className={`image-selector-card ${!selectingMultiple && selected ? "active" : ""} ${bulkSelected ? "bulk-selected" : ""} ${selectingMultiple && !selectable ? "bulk-disabled" : ""} ${hasLabels ? "has-labels" : "needs-drawing"}`}
+            aria-pressed={selectingMultiple ? bulkSelected : selected}
+            aria-disabled={selectingMultiple && !selectable}
+            onClick={() => selectingMultiple ? togglePendingImage(image.image_id) : onSelect(image.image_id)}
+            key={image.image_id}
+            type="button"
+          >
+            {!selectingMultiple && selected && <span className="image-card-selected"><Check size={14} /> Current image</span>}
+            {selectingMultiple && bulkSelected && <span className="image-card-selected"><Check size={14} /> Selected</span>}
             <span className={`image-card-label-state ${hasLabels ? "labeled" : "drawing"}`}>{hasLabels ? "Labeled" : "Needs drawing"}</span>
             <ImageSelectorPreview image={image} alt={image.original_filename ?? `Image ${globalIndex}`} preview={preview} frame={frame} classColors={classColors} />
             <div><strong>#{globalIndex} {image.original_filename ?? `image-${globalIndex}`}</strong><span className={statusClass}>{pendingImageIds.has(image.image_id) && hasLabels ? `Pending · ${annotationStatus?.box_count ?? 0}` : statusText}</span></div>
@@ -1918,10 +2352,24 @@ function ImageSelectorModal({
         <div className="image-lazy-sentinel" ref={bottomSentinelRef}>{rangeEnd < filtered.length ? "Loading more images..." : "All images loaded"}</div>
       </div>
       <footer className="image-selector-footer">
-        <span>Showing {visible.length} of {filtered.length} images · scroll to load more</span>
-        {pendingAnnotationSetCount > 0 && <div className="image-selector-review-actions">
-          <button onClick={onAcceptAll} disabled={busy}><Check size={16} /> Accept all ({pendingAnnotationSetCount})</button>
-          <button className="danger-button" onClick={onRejectAll} disabled={busy}><Trash2 size={16} /> Reject all ({pendingAnnotationSetCount})</button>
+        {selectingMultiple ? (
+          <div className="image-selector-selection-summary">
+            <strong>{selectedPendingImageIds.size} selected</strong>
+            <button onClick={toggleVisiblePendingImages} disabled={visiblePendingImageIds.length === 0 || busy} type="button">
+              {allVisiblePendingSelected ? "Clear shown" : `Select shown (${visiblePendingImageIds.length})`}
+            </button>
+            {selectedPendingImageIds.size > 0 && <button onClick={() => setSelectedPendingImageIds(new Set())} disabled={busy} type="button">Clear selection</button>}
+          </div>
+        ) : <span>Showing {visible.length} of {filtered.length} images · scroll to load more</span>}
+        {selectingMultiple ? (
+          <div className="image-selector-review-actions">
+            <button onClick={() => onReviewSelected([...selectedPendingImageIds], "accept")} disabled={selectedPendingImageIds.size === 0 || busy}><Check size={16} /> Accept selected ({selectedPendingImageIds.size})</button>
+            <button className="danger-button" onClick={() => onReviewSelected([...selectedPendingImageIds], "reject")} disabled={selectedPendingImageIds.size === 0 || busy}><Trash2 size={16} /> Reject selected ({selectedPendingImageIds.size})</button>
+            <button onClick={stopMultipleSelection} disabled={busy} type="button">Done</button>
+          </div>
+        ) : pendingImageIds.size > 0 && <div className="image-selector-review-actions">
+          <button onClick={onAcceptAll} disabled={busy}><Check size={16} /> Accept all ({pendingImageIds.size})</button>
+          <button className="danger-button" onClick={onRejectAll} disabled={busy}><Trash2 size={16} /> Reject all ({pendingImageIds.size})</button>
         </div>}
       </footer>
     </section>
@@ -1929,32 +2377,63 @@ function ImageSelectorModal({
 }
 
 function YoloImportModal({
-  file, inspection, limit, classMode, classIndexes, classNames, busy,
-  onLimitChange, onClassModeChange, onClassIndexesChange, onClassNamesChange, onImport, onClose,
+  file, inspection, limit, importRemainingImages, classMode, classIndexes, classNames, busy,
+  onLimitChange, onImportRemainingImagesChange, onClassModeChange, onClassIndexesChange, onClassNamesChange, onImport, onClose,
 }: {
   file: File;
   inspection: ArchiveInspection;
   limit: string;
+  importRemainingImages: boolean;
   classMode: "all" | "selected";
   classIndexes: string;
   classNames: string;
   busy: boolean;
   onLimitChange: (value: string) => void;
+  onImportRemainingImagesChange: (value: boolean) => void;
   onClassModeChange: (value: "all" | "selected") => void;
   onClassIndexesChange: (value: string) => void;
   onClassNamesChange: (value: string) => void;
   onImport: () => void;
   onClose: () => void;
 }) {
+  const parsedLimit = Number(limit);
+  const importedLabeledImages = limit.trim() !== "" && Number.isFinite(parsedLimit)
+    ? Math.max(0, Math.min(inspection.labeled_image_count, Math.floor(parsedLimit)))
+    : 0;
+  const importedUnlabeledImages = importRemainingImages
+    ? inspection.image_count - importedLabeledImages
+    : 0;
+  const importedImageCount = importedLabeledImages + importedUnlabeledImages;
+  const skippedImageCount = inspection.image_count - importedImageCount;
   return <div className="results-modal-backdrop"><section className="training-modal" role="dialog" aria-modal="true" aria-label="Import YOLO dataset">
     <header className="training-modal-header"><div><h3>YOLO dataset detected</h3><p>{file.name} · {inspection.image_count} images</p></div><button className="icon-button" onClick={onClose} disabled={busy}><X size={18} /></button></header>
-    <div className="training-form">
-      <label className="training-field"><span>Import images</span><input min="1" max={inspection.image_count} placeholder={`All ${inspection.image_count} images`} type="number" value={limit} onChange={(event) => onLimitChange(event.target.value)} /></label>
+    <div className="training-form yolo-import-form">
+      <section className="yolo-archive-summary training-field-wide" aria-label="Archive summary">
+        <div><span>Total images</span><strong>{inspection.image_count}</strong></div>
+        <div><span>With labels</span><strong>{inspection.labeled_image_count}</strong></div>
+        <div><span>Without labels</span><strong>{inspection.unlabeled_image_count}</strong></div>
+      </section>
+      <label className="training-field training-field-wide yolo-label-count">
+        <span>Images to import with labels</span>
+        <div>
+          <input min="0" max={inspection.labeled_image_count} type="number" value={limit} onChange={(event) => onLimitChange(event.target.value)} />
+          <button type="button" onClick={() => onLimitChange(String(inspection.labeled_image_count))} disabled={busy}>Use all {inspection.labeled_image_count}</button>
+        </div>
+        <small>{inspection.labeled_image_count} labeled images available</small>
+      </label>
+      <label className="yolo-remaining-images training-field-wide">
+        <input type="checkbox" checked={importRemainingImages} onChange={(event) => onImportRemainingImagesChange(event.target.checked)} />
+        <span><strong>Import remaining images without labels</strong><small>{inspection.image_count - importedLabeledImages} images</small></span>
+      </label>
       <label className="training-field"><span>YOLO classes</span><select value={classMode} onChange={(event) => onClassModeChange(event.target.value as "all" | "selected")}><option value="all">All classes</option><option value="selected">Selected indexes</option></select></label>
       {classMode === "selected" && <label className="training-field"><span>Class indexes</span><input placeholder="0 or 0,1" value={classIndexes} onChange={(event) => onClassIndexesChange(event.target.value)} /></label>}
       <label className="training-field training-field-wide"><span>Class names</span><input value={classNames} onChange={(event) => onClassNamesChange(event.target.value)} placeholder="Detected from data.yaml" /></label>
+      <section className="yolo-import-plan training-field-wide" aria-label="Import plan">
+        <strong>{importedImageCount} images will be imported</strong>
+        <span>{importedLabeledImages} with labels · {importedUnlabeledImages} without labels{skippedImageCount > 0 ? ` · ${skippedImageCount} skipped` : ""}</span>
+      </section>
     </div>
-    <footer className="training-modal-footer"><button onClick={onClose} disabled={busy}>Cancel</button><button className="primary" onClick={onImport} disabled={busy}><Upload size={16} /> Import dataset</button></footer>
+    <footer className="training-modal-footer"><button onClick={onClose} disabled={busy}>Cancel</button><button className="primary" onClick={onImport} disabled={busy || importedImageCount === 0}><Upload size={16} /> Import dataset</button></footer>
   </section></div>;
 }
 
@@ -2484,11 +2963,15 @@ function ModelTestWorkspace({
   selectedModelId,
   images,
   predictions,
+  failures,
+  progress,
   confidenceThreshold,
   classColors,
   busy,
   onModelChange,
   onImagesChange,
+  onRemoveImage,
+  onClearImages,
   onThresholdChange,
   onRun,
 }: {
@@ -2497,18 +2980,27 @@ function ModelTestWorkspace({
   poseProject: boolean;
   selectedModelId: number | "pose-pretrained" | null;
   images: TestImage[];
-  predictions: ModelPrediction[];
+  predictions: (ModelPrediction | null)[];
+  failures: Record<number, string>;
+  progress: TestRunProgress;
   confidenceThreshold: number;
   classColors: Record<number, string>;
   busy: boolean;
   onModelChange: (modelId: number | "pose-pretrained" | null) => void;
   onImagesChange: (files: FileList | null) => void;
+  onRemoveImage: (imageIndex: number) => void;
+  onClearImages: () => void;
   onThresholdChange: (value: number) => void;
-  onRun: () => void;
+  onRun: (mode: "untested" | "all") => void;
 }) {
-  const [testPage, setTestPage] = useState(0);
+  const [visibleTestCount, setVisibleTestCount] = useState(48);
+  const [testResultFilter, setTestResultFilter] = useState<TestResultFilter>("all");
+  const [isTestFilterMenuOpen, setIsTestFilterMenuOpen] = useState(false);
   const [isFileDragActive, setIsFileDragActive] = useState(false);
-  const pageSize = 48;
+  const testResultsRef = useRef<HTMLDivElement | null>(null);
+  const testLoadMoreRef = useRef<HTMLDivElement | null>(null);
+  const testFilterMenuRef = useRef<HTMLDivElement | null>(null);
+  const lazyBatchSize = 48;
   const projectModels = useMemo(
     () => models.filter((model) => model.project_id === projectId),
     [models, projectId],
@@ -2516,19 +3008,105 @@ function ModelTestWorkspace({
   const selectedModel = typeof selectedModelId === "number"
     ? projectModels.find((model) => model.model_id === selectedModelId) ?? null
     : null;
-  const detectedCount = predictions.reduce((total, prediction) => total + prediction.boxes.length, 0);
-  const pageCount = Math.max(1, Math.ceil(images.length / pageSize));
-  const currentPage = Math.min(testPage, pageCount - 1);
-  const pageStart = currentPage * pageSize;
-  const visibleImages = images.slice(pageStart, pageStart + pageSize);
+  const completedPredictions = predictions.filter((prediction): prediction is ModelPrediction => prediction != null);
+  const totalDetections = completedPredictions.reduce((total, prediction) => total + prediction.boxes.length, 0);
+  const detectedImages = completedPredictions.filter((prediction) => prediction.boxes.length > 0).length;
+  const noDetectionImages = completedPredictions.filter((prediction) => prediction.boxes.length === 0).length;
+  const failedImages = Object.keys(failures).length;
+  const confidenceTotal = completedPredictions.reduce(
+    (total, prediction) => total + prediction.boxes.reduce((sum, box) => sum + box.confidence, 0),
+    0,
+  );
+  const averageConfidence = totalDetections > 0 ? confidenceTotal / totalDetections : null;
+  const progressPercent = progress.total > 0 ? Math.round((progress.processed / progress.total) * 100) : 0;
+  const hasTestResults = completedPredictions.length > 0 || failedImages > 0;
+  const untestedCount = images.filter((_, index) => predictions[index] == null && failures[index] == null).length;
+  const filterCounts: Record<TestResultFilter, number> = {
+    all: images.length,
+    detected: detectedImages,
+    "no-detections": noDetectionImages,
+    failed: failedImages,
+  };
+  const filteredTestImages = images
+    .map((image, index) => ({ image, index }))
+    .filter(({ index }) => {
+      if (testResultFilter === "detected") return (predictions[index]?.boxes.length ?? 0) > 0;
+      if (testResultFilter === "no-detections") return predictions[index] != null && predictions[index]?.boxes.length === 0;
+      if (testResultFilter === "failed") return failures[index] != null;
+      return true;
+    });
+  const selectedFilterLabel = testResultFilter === "detected"
+    ? "Objects found"
+    : testResultFilter === "no-detections"
+      ? "No objects found"
+      : testResultFilter === "failed"
+        ? "Failed images"
+        : "All images";
+  const filteredResultLabel = testResultFilter === "detected"
+    ? "images with objects"
+    : testResultFilter === "no-detections"
+      ? "images with no objects"
+      : testResultFilter === "failed"
+        ? "failed images"
+        : "test images";
+  const runButtonLabel = !hasTestResults
+    ? `Run ${images.length || ""} test${images.length === 1 ? "" : "s"}`
+    : untestedCount > 0
+      ? `Run ${untestedCount} new image${untestedCount === 1 ? "" : "s"}`
+      : "Run tests again";
+  const runTests = () => {
+    if (hasTestResults && untestedCount === 0) {
+      if (!window.confirm("Run all test images again and replace the current results?")) return;
+      onRun("all");
+      return;
+    }
+    onRun(hasTestResults ? "untested" : "all");
+  };
+  const visibleImages = filteredTestImages.slice(0, visibleTestCount);
   const canHandleFiles = (event: DragEvent<HTMLElement>) => Array.from(event.dataTransfer.types).includes("Files");
+  const selectTestResultFilter = (filter: TestResultFilter) => {
+    setTestResultFilter(filter);
+    setIsTestFilterMenuOpen(false);
+    setVisibleTestCount(Math.min(lazyBatchSize, filterCounts[filter]));
+    if (testResultsRef.current) testResultsRef.current.scrollTop = 0;
+  };
 
-  useEffect(() => setTestPage(0), [images]);
+  useEffect(() => {
+    setVisibleTestCount((current) => {
+      if (filteredTestImages.length === 0) return 0;
+      if (current === 0) return Math.min(lazyBatchSize, filteredTestImages.length);
+      return Math.min(current, filteredTestImages.length);
+    });
+  }, [filteredTestImages.length]);
+
+  useEffect(() => {
+    const root = testResultsRef.current;
+    const sentinel = testLoadMoreRef.current;
+    if (!root || !sentinel || visibleTestCount >= filteredTestImages.length) return;
+    const observer = new IntersectionObserver((entries) => {
+      if (!entries.some((entry) => entry.isIntersecting)) return;
+      setVisibleTestCount((current) => Math.min(filteredTestImages.length, current + lazyBatchSize));
+    }, { root, rootMargin: "360px 0px", threshold: 0.01 });
+    observer.observe(sentinel);
+    return () => observer.disconnect();
+  }, [filteredTestImages.length, visibleTestCount]);
   useEffect(() => {
     const invalidCustomModel = typeof selectedModelId === "number" && selectedModel == null;
     const invalidPoseModel = selectedModelId === "pose-pretrained" && !poseProject;
     if (invalidCustomModel || invalidPoseModel) onModelChange(null);
   }, [onModelChange, poseProject, selectedModel, selectedModelId]);
+
+  useEffect(() => {
+    if (testResultFilter === "failed" && failedImages === 0) selectTestResultFilter("all");
+  }, [failedImages, testResultFilter]);
+
+  useEffect(() => {
+    const closeFilterMenu = (event: MouseEvent) => {
+      if (!testFilterMenuRef.current?.contains(event.target as Node)) setIsTestFilterMenuOpen(false);
+    };
+    document.addEventListener("mousedown", closeFilterMenu);
+    return () => document.removeEventListener("mousedown", closeFilterMenu);
+  }, []);
 
   return (
     <main className="test-workspace">
@@ -2555,20 +3133,23 @@ function ModelTestWorkspace({
           onImagesChange(event.dataTransfer.files);
         }}
       >
-        <div className="test-toolbar">
-          <label className="file-button">
-            <Upload size={16} /> Choose test images
-            <input
-              type="file"
-              accept="image/*"
-              multiple
+        <div className="test-controls">
+          <div className="test-toolbar">
+            <label className="file-button">
+            <Upload size={16} /> {images.length > 0 ? "Add images" : "Choose test images"}
+              <input
+                type="file"
+                accept="image/*"
+                multiple
+                disabled={busy}
               onChange={(event) => {
                 onImagesChange(event.target.files);
                 event.currentTarget.value = "";
               }}
             />
-          </label>
-          <label className="test-model-field">
+            </label>
+            {images.length > 0 && <button onClick={onClearImages} disabled={busy} type="button"><Trash2 size={16} /> Clear all</button>}
+            <label className="test-model-field">
             <span>Model version</span>
             <select
               value={selectedModelId ?? ""}
@@ -2587,8 +3168,8 @@ function ModelTestWorkspace({
                 </option>
               ))}
             </select>
-          </label>
-          <label className="test-threshold-field">
+            </label>
+            <label className="test-threshold-field">
             <span>Confidence {confidenceThreshold.toFixed(2)}</span>
             <input
               type="range"
@@ -2599,47 +3180,104 @@ function ModelTestWorkspace({
               onChange={(event) => onThresholdChange(Number(event.target.value))}
               disabled={busy}
             />
-          </label>
-          <button className="primary" onClick={onRun} disabled={!selectedModelId || images.length === 0 || busy}>
-            <Play size={16} /> Run {images.length || ""} test{images.length === 1 ? "" : "s"}
-          </button>
+            </label>
+            <button className="primary" onClick={runTests} disabled={!selectedModelId || images.length === 0 || busy}>
+              {hasTestResults && untestedCount === 0 ? <RotateCcw size={16} /> : <Play size={16} />} {runButtonLabel}
+            </button>
+          </div>
+          {images.length > 0 && (
+            <div className="test-results-header">
+              <div className="test-results-title">
+                <strong>Test results</strong>
+                <span>{images.length} images · {completedPredictions.length + failedImages} processed</span>
+              </div>
+              <div className="test-filter-menu" ref={testFilterMenuRef}>
+                <button
+                  className={isTestFilterMenuOpen ? "test-filter-trigger active" : "test-filter-trigger"}
+                  type="button"
+                  aria-expanded={isTestFilterMenuOpen}
+                  aria-haspopup="menu"
+                  onClick={() => setIsTestFilterMenuOpen((open) => !open)}
+                >
+                  <Filter size={15} /> <span>Filter: {selectedFilterLabel}</span> <ChevronDown size={15} />
+                </button>
+                {isTestFilterMenuOpen && (
+                  <div className="test-filter-options" role="menu">
+                    {([
+                      ["all", "All images"],
+                      ...(completedPredictions.length > 0 ? [
+                        ["detected", "Objects found"],
+                        ["no-detections", "No objects found"],
+                      ] : []),
+                      ...(failedImages > 0 ? [["failed", "Failed images"]] : []),
+                    ] as [TestResultFilter, string][]).map(([filter, label]) => (
+                      <button
+                        className={`${testResultFilter === filter ? "active " : ""}${filter === "failed" ? "failed-item" : ""}`.trim()}
+                        type="button"
+                        role="menuitemradio"
+                        aria-checked={testResultFilter === filter}
+                        key={filter}
+                        onClick={() => selectTestResultFilter(filter)}
+                      >
+                        <span>{filter === "failed" && <CircleAlert size={14} />}{label}</span>
+                        <strong>{filterCounts[filter]}</strong>
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
         </div>
         {images.length === 0 ? <div className="test-image-canvas"><div className="empty">Choose test images</div></div>
           : <>
-            <div className="test-results-scroll">
+            <div className="test-results-scroll" ref={testResultsRef}>
               <div className="test-results-grid">
-                {visibleImages.map((image, index) => {
-                  const predictionIndex = pageStart + index;
+                {visibleImages.map(({ image, index: predictionIndex }) => {
                   return <TestImageCard
                     key={image.key}
                     image={image}
                     prediction={predictions[predictionIndex] ?? null}
+                    failed={failures[predictionIndex] != null}
+                    processing={progress.running && predictionIndex === progress.currentImageIndex}
                     classColors={classColors}
+                    busy={busy}
+                    onRemove={() => onRemoveImage(predictionIndex)}
                   />;
                 })}
+                {filteredTestImages.length === 0
+                  ? <div className="test-filter-empty">No images in this view</div>
+                  : <div className="test-lazy-sentinel" ref={testLoadMoreRef}>
+                    {visibleTestCount < filteredTestImages.length ? "Loading more images..." : "All matching images loaded"}
+                  </div>}
               </div>
             </div>
-            <nav className="test-pager" aria-label="Test image pages">
-              <span>Showing {pageStart + 1}-{Math.min(pageStart + pageSize, images.length)} of {images.length}</span>
-              <div>
-                <button
-                  className="icon-button"
-                  title="Previous page"
-                  aria-label="Previous page"
-                  onClick={() => setTestPage((page) => Math.max(0, page - 1))}
-                  disabled={currentPage === 0}
-                ><ChevronLeft size={18} /></button>
-                <strong>{currentPage + 1} / {pageCount}</strong>
-                <button
-                  className="icon-button"
-                  title="Next page"
-                  aria-label="Next page"
-                  onClick={() => setTestPage((page) => Math.min(pageCount - 1, page + 1))}
-                  disabled={currentPage === pageCount - 1}
-                ><ChevronRight size={18} /></button>
-              </div>
-            </nav>
+            <footer className="test-lazy-status">
+              <span>Showing {visibleImages.length} of {filteredTestImages.length} {filteredResultLabel}</span>
+              <span>{visibleImages.length < filteredTestImages.length ? "Scroll to load more" : `${images.length} images total`}</span>
+            </footer>
           </>}
+        {progress.running && (
+          <div className="test-running-overlay" role="status" aria-live="polite">
+            <div className="test-running-panel">
+              <RefreshCw className="test-running-spinner" size={24} />
+              <div className="test-running-heading">
+                <strong>{progress.processed === 0 ? "Loading model" : "Running model test"}</strong>
+                <span>{progress.processed === 0 ? `Preparing to test ${progress.total} images` : `Processing image ${progress.currentFrom} of ${progress.total}`}</span>
+              </div>
+              <div className="test-running-progress-copy">
+                <span>{progress.processed} processed</span>
+                <strong>{progressPercent}%</strong>
+              </div>
+              <progress max={progress.total} value={progress.processed} />
+              <div className="test-running-counts">
+                <span><strong>{detectedImages}</strong> Detected</span>
+                <span><strong>{noDetectionImages}</strong> No detections</span>
+                <span className={failedImages > 0 ? "has-failures" : ""}><strong>{failedImages}</strong> Failed</span>
+              </div>
+            </div>
+          </div>
+        )}
         {isFileDragActive && <div className="test-drop-overlay"><Upload size={28} /><strong>Drop test images here</strong></div>}
       </section>
 
@@ -2648,19 +3286,30 @@ function ModelTestWorkspace({
           <Metric label="Model" value={selectedModelId === "pose-pretrained" ? "Pose base" : selectedModel ? `v${selectedModel.version}` : "-"} />
           <Metric label="Threshold" value={confidenceThreshold.toFixed(2)} />
           <Metric label="Images" value={images.length} />
-          <Metric label="Detections" value={predictions.length > 0 ? detectedCount : "-"} />
+          {progress.total > 0 && <div className="test-progress" aria-label={`Processed ${progress.processed} of ${progress.total} images`}>
+            <div><strong>{progress.running ? `Processing ${progress.currentFrom}-${progress.currentTo}` : progress.processed > 0 ? "Completed" : "Ready"}</strong><span>{progress.processed} / {progress.total} · {progressPercent}%</span></div>
+            <progress max={progress.total} value={progress.processed} />
+          </div>}
+          <div className="test-summary-grid">
+            <Metric label="Detected images" value={progress.processed > 0 ? detectedImages : "-"} />
+            <Metric label="No detections" value={progress.processed > 0 ? noDetectionImages : "-"} />
+            <Metric label="Failed" value={progress.processed > 0 ? failedImages : "-"} />
+            <Metric label="Total detections" value={progress.processed > 0 ? totalDetections : "-"} />
+          </div>
+          <Metric label="Average confidence" value={averageConfidence == null ? "-" : averageConfidence.toFixed(3)} />
+          <Metric label="Elapsed time" value={progress.processed > 0 ? formatDuration(progress.elapsedMs) : "-"} />
         </Panel>
         <Panel title="Predictions">
-          {predictions.length === 0 ? <span className="muted">Choose test images and run the selected model.</span>
-            : detectedCount === 0 ? <span className="muted">No detections above the selected threshold.</span>
+          {progress.processed === 0 ? <span className="muted">Choose test images and run the selected model.</span>
+            : totalDetections === 0 ? <span className="muted">No detections above the selected threshold.</span>
               : <div className="test-prediction-list">
-                {predictions.flatMap((prediction, imageIndex) => prediction.boxes.map((box, boxIndex) => (
+                {predictions.flatMap((prediction, imageIndex) => prediction?.boxes.map((box, boxIndex) => (
                   <div className="test-prediction-row" key={`${imageIndex}-${box.class_id}-${boxIndex}`}>
                     <span className="swatch" style={{ background: classColors[box.class_id] ?? "#16a34a" }} />
                     <strong>{images[imageIndex]?.file.name}: {box.class_name}</strong>
                     <span>{box.confidence.toFixed(2)}</span>
                   </div>
-                ))) }
+                )) ?? []) }
               </div>}
         </Panel>
       </aside>
@@ -2671,11 +3320,19 @@ function ModelTestWorkspace({
 function TestImageCard({
   image,
   prediction,
+  failed,
+  processing,
   classColors,
+  busy,
+  onRemove,
 }: {
   image: TestImage;
   prediction: ModelPrediction | null;
+  failed: boolean;
+  processing: boolean;
   classColors: Record<number, string>;
+  busy: boolean;
+  onRemove: () => void;
 }) {
   const [dimensions, setDimensions] = useState<{ width: number; height: number } | null>(null);
   const frame = useMemo(
@@ -2705,7 +3362,8 @@ function TestImageCard({
       </div>
       <footer>
         <strong title={image.file.name}>{image.file.name}</strong>
-        <span>{prediction ? `${prediction.boxes.length} detected` : "Ready"}</span>
+        <span className={failed ? "test-result-failed" : ""}>{failed ? "Failed" : prediction ? (prediction.boxes.length > 0 ? `${prediction.boxes.length} detected` : "No detections") : processing ? "Processing" : "Ready"}</span>
+        <button className="icon-button test-image-remove" onClick={onRemove} disabled={busy} title={`Remove ${image.file.name}`} type="button"><X size={15} /></button>
       </footer>
     </article>
   );
@@ -2745,8 +3403,179 @@ function TestPoseSkeleton({
   );
 }
 
+function DatasetSelectionModal({
+  images, classColors, annotationStatuses, busy, onClose, onCreate,
+}: {
+  images: ImageItem[];
+  classColors: Record<number, string>;
+  annotationStatuses: ImageAnnotationStatus[];
+  busy: boolean;
+  onClose: () => void;
+  onCreate: (imageIds: number[]) => void;
+}) {
+  const candidates = useMemo(() => {
+    const approved = new Map(annotationStatuses
+      .filter((status) => status.status === "APPROVED" && status.box_count > 0)
+      .map((status) => [status.image_id, status]));
+    return images.flatMap((image) => {
+      const status = approved.get(image.image_id);
+      return status ? [{ image, status }] : [];
+    });
+  }, [images, annotationStatuses]);
+  const [selectedIds, setSelectedIds] = useState(() => new Set(candidates.map(({ image }) => image.image_id)));
+  const [search, setSearch] = useState("");
+  const [filter, setFilter] = useState<"all" | "manual" | "model">("all");
+  const [sampleSize, setSampleSize] = useState(200);
+  const [visibleCount, setVisibleCount] = useState(24);
+  const gridRef = useRef<HTMLDivElement | null>(null);
+  const loadMoreRef = useRef<HTMLDivElement | null>(null);
+  const manualCandidates = candidates.filter(({ status }) => status.source_type !== "MODEL");
+  const modelCandidates = candidates.filter(({ status }) => status.source_type === "MODEL");
+  const filtered = candidates.filter(({ image, status }) => (
+    (filter === "all" || (filter === "manual" ? status.source_type !== "MODEL" : status.source_type === "MODEL"))
+    && (image.original_filename ?? String(image.image_id)).toLowerCase().includes(search.toLowerCase())
+  ));
+  const visible = filtered.slice(0, visibleCount);
+  const selected = candidates.filter(({ image }) => selectedIds.has(image.image_id));
+  const selectedManualCount = selected.filter(({ status }) => status.source_type !== "MODEL").length;
+  const allShownSelected = visible.length > 0 && visible.every(({ image }) => selectedIds.has(image.image_id));
+
+  useEffect(() => {
+    setVisibleCount(24);
+    gridRef.current?.scrollTo({ top: 0 });
+  }, [filter, search]);
+
+  useEffect(() => {
+    if (!loadMoreRef.current || visibleCount >= filtered.length) return;
+    const observer = new IntersectionObserver(([entry]) => {
+      if (entry.isIntersecting) setVisibleCount((count) => Math.min(count + 24, filtered.length));
+    }, { root: gridRef.current, rootMargin: "400px" });
+    observer.observe(loadMoreRef.current);
+    return () => observer.disconnect();
+  }, [visibleCount, filtered.length, filter, search]);
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape" && !busy) onClose();
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [busy, onClose]);
+
+  const toggleImage = (imageId: number) => {
+    setSelectedIds((current) => {
+      const next = new Set(current);
+      if (next.has(imageId)) next.delete(imageId);
+      else next.add(imageId);
+      return next;
+    });
+  };
+  const addSample = () => {
+    const pool = modelCandidates.filter(({ image }) => !selectedIds.has(image.image_id));
+    for (let index = pool.length - 1; index > 0; index -= 1) {
+      const other = Math.floor(Math.random() * (index + 1));
+      [pool[index], pool[other]] = [pool[other], pool[index]];
+    }
+    const count = Math.max(0, Math.floor(sampleSize));
+    setSelectedIds((current) => new Set([...current, ...pool.slice(0, count).map(({ image }) => image.image_id)]));
+  };
+
+  return <div className="results-modal-backdrop" onMouseDown={(event) => {
+    if (event.target === event.currentTarget && !busy) onClose();
+  }}>
+    <section className="dataset-selection-modal" role="dialog" aria-modal="true" aria-labelledby="dataset-selection-title">
+      <header className="results-modal-header">
+        <div><h3 id="dataset-selection-title">Create dataset version</h3><p>{candidates.length} images with approved labels</p></div>
+        <button className="icon-button" onClick={onClose} disabled={busy} title="Close"><X size={18} /></button>
+      </header>
+      <div className="dataset-selection-tools">
+        <div className="dataset-selection-actions">
+          <button onClick={() => setSelectedIds(new Set(candidates.map(({ image }) => image.image_id)))} disabled={busy}><Check size={16} /> Select all</button>
+          <button onClick={() => setSelectedIds(new Set())} disabled={busy}><X size={16} /> Clear</button>
+          <button onClick={() => setSelectedIds(new Set(manualCandidates.map(({ image }) => image.image_id)))} disabled={busy || manualCandidates.length === 0}><Pencil size={16} /> Select manual labels ({manualCandidates.length})</button>
+          <label className="dataset-sample-size">Auto-label sample<input type="number" min={1} max={modelCandidates.length || 1} value={sampleSize} onChange={(event) => setSampleSize(Number(event.target.value))} disabled={busy} /></label>
+          <button onClick={addSample} disabled={busy || !Number.isFinite(sampleSize) || sampleSize < 1 || modelCandidates.every(({ image }) => selectedIds.has(image.image_id))}><Plus size={16} /> Add sample</button>
+        </div>
+        <div className="dataset-selection-filters">
+          <input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search images" aria-label="Search dataset images" />
+          <div className="dataset-source-tabs" aria-label="Label source">
+            {(["all", "manual", "model"] as const).map((value) => <button type="button" aria-pressed={filter === value} className={filter === value ? "active" : ""} onClick={() => setFilter(value)} key={value}>{value === "all" ? "All" : value === "manual" ? "Manual labels" : "Auto labels"}</button>)}
+          </div>
+          <label className="dataset-select-shown"><input type="checkbox" checked={allShownSelected} disabled={busy || visible.length === 0} onChange={() => setSelectedIds((current) => {
+            const next = new Set(current);
+            visible.forEach(({ image }) => allShownSelected ? next.delete(image.image_id) : next.add(image.image_id));
+            return next;
+          })} /> Select shown ({visible.length})</label>
+        </div>
+      </div>
+      <div className="dataset-selection-grid" ref={gridRef}>
+        {visible.map(({ image, status }) => <label className={`dataset-image-item${selectedIds.has(image.image_id) ? " selected" : ""}`} key={image.image_id}>
+          <div className="dataset-image-preview"><DatasetAnnotationPreview image={image} annotationSetId={status.annotation_set_id} classColors={classColors} /><input type="checkbox" checked={selectedIds.has(image.image_id)} onChange={() => toggleImage(image.image_id)} disabled={busy} aria-label={`Include ${image.original_filename ?? image.image_id}`} /></div>
+          <div className="dataset-image-meta"><strong title={image.original_filename ?? ""}>{image.original_filename ?? `Image ${image.image_id}`}</strong><span>{status.source_type === "MODEL" ? "Auto label" : "Manual label"} · {status.box_count} {status.box_count === 1 ? "box" : "boxes"}</span></div>
+        </label>)}
+        {filtered.length === 0 && <div className="results-filter-empty">No approved labeled images in this view.</div>}
+        {visibleCount < filtered.length && <div className="results-load-more" ref={loadMoreRef}>Loading more images...</div>}
+      </div>
+      <footer className="results-modal-footer dataset-selection-footer">
+        <span>{selected.length} selected · {selectedManualCount} manual · {selected.length - selectedManualCount} auto</span>
+        <div className="results-modal-actions"><button onClick={onClose} disabled={busy}>Cancel</button><button className="primary" onClick={() => onCreate(selected.map(({ image }) => image.image_id))} disabled={busy || selected.length === 0}><Database size={16} /> {busy ? "Building..." : `Create & Build (${selected.length})`}</button></div>
+      </footer>
+    </section>
+  </div>;
+}
+
+function DatasetAnnotationPreview({ image, annotationSetId, classColors }: {
+  image: ImageItem;
+  annotationSetId: number;
+  classColors: Record<number, string>;
+}) {
+  const containerRef = useRef<HTMLDivElement | null>(null);
+  const [preview, setPreview] = useState<AnnotationSet | null>(null);
+  const [failed, setFailed] = useState(false);
+  const [inView, setInView] = useState(false);
+  const [aspectRatio, setAspectRatio] = useState(4 / 3);
+
+  useEffect(() => {
+    const container = containerRef.current;
+    if (!container) return;
+    const resize = new ResizeObserver(([entry]) => {
+      if (entry.contentRect.height > 0) setAspectRatio(entry.contentRect.width / entry.contentRect.height);
+    });
+    resize.observe(container);
+    const observer = new IntersectionObserver(([entry]) => {
+      if (entry.isIntersecting) {
+        setInView(true);
+        observer.disconnect();
+      }
+    }, { root: container.closest(".dataset-selection-grid"), rootMargin: "200px" });
+    observer.observe(container);
+    return () => { resize.disconnect(); observer.disconnect(); };
+  }, []);
+
+  useEffect(() => {
+    if (!inView) return;
+    let cancelled = false;
+    setPreview(null);
+    setFailed(false);
+    api.listAnnotations(image.image_id).then((sets) => {
+      if (cancelled) return;
+      const approved = sets.find((set) => set.annotation_set_id === annotationSetId && set.status === "APPROVED");
+      setPreview(approved ?? null);
+      setFailed(!approved);
+    }).catch(() => { if (!cancelled) setFailed(true); });
+    return () => { cancelled = true; };
+  }, [inView, image.image_id, annotationSetId]);
+
+  const frame = getImageFrameForDimensions(image.width ?? 1, image.height ?? 1, aspectRatio);
+  return <div className="dataset-annotation-preview" ref={containerRef}>
+    {inView && <ImageSelectorPreview image={image} alt={image.original_filename ?? `Image ${image.image_id}`} preview={preview} frame={frame} classColors={classColors} />}
+    {inView && !preview && <span className="dataset-preview-status">{failed ? "Labels unavailable" : "Loading labels..."}</span>}
+  </div>;
+}
+
 function AutoLabelResultsModal({
   results,
+  modelName,
   classColors,
   onClose,
   onOpen,
@@ -2755,6 +3584,7 @@ function AutoLabelResultsModal({
   busy,
 }: {
   results: AutoLabelResult[];
+  modelName: string;
   classColors: Record<number, string>;
   onClose: () => void;
   onOpen: (result: AutoLabelResult) => void;
@@ -2763,9 +3593,9 @@ function AutoLabelResultsModal({
   busy: boolean;
 }) {
   const [resultFilter, setResultFilter] = useState<AutoLabelResultFilter>("all");
-  const [resultsPage, setResultsPage] = useState(0);
+  const [visibleCount, setVisibleCount] = useState(24);
   const resultsGridRef = useRef<HTMLDivElement | null>(null);
-  const resultsPageSize = 60;
+  const loadMoreRef = useRef<HTMLDivElement | null>(null);
   const isAccepted = (result: AutoLabelResult) => result.annotationSet?.status === "APPROVED";
   const activeResults = results.filter((result) => !isAccepted(result));
   const detectedCount = activeResults.filter((result) => (result.annotationSet?.annotations.length ?? 0) > 0).length;
@@ -2784,11 +3614,7 @@ function AutoLabelResultsModal({
     if (resultFilter === "failed") return result.status === "FAILED";
     return true;
   });
-  const resultsPageCount = Math.max(1, Math.ceil(filteredResults.length / resultsPageSize));
-  const visibleResults = filteredResults.slice(
-    resultsPage * resultsPageSize,
-    (resultsPage + 1) * resultsPageSize,
-  );
+  const visibleResults = filteredResults.slice(0, visibleCount);
   const filters: { key: AutoLabelResultFilter; label: string; count: number }[] = [
     { key: "all", label: "All", count: activeResults.length },
     { key: "detected", label: "Detected", count: detectedCount },
@@ -2798,9 +3624,18 @@ function AutoLabelResultsModal({
   ];
 
   useEffect(() => {
-    setResultsPage(0);
+    setVisibleCount(24);
     resultsGridRef.current?.scrollTo({ top: 0 });
   }, [resultFilter]);
+
+  useEffect(() => {
+    if (!loadMoreRef.current || visibleCount >= filteredResults.length) return;
+    const observer = new IntersectionObserver(([entry]) => {
+      if (entry.isIntersecting) setVisibleCount((count) => Math.min(count + 24, filteredResults.length));
+    }, { root: resultsGridRef.current, rootMargin: "400px" });
+    observer.observe(loadMoreRef.current);
+    return () => observer.disconnect();
+  }, [visibleCount, filteredResults.length, resultFilter]);
 
   return (
     <div className="results-modal-backdrop" role="presentation" onMouseDown={onClose}>
@@ -2814,7 +3649,7 @@ function AutoLabelResultsModal({
         <header className="results-modal-header">
           <div>
             <h3 id="auto-label-results-title">Auto-label results</h3>
-            <p>{results.length} images processed</p>
+            <p>{results.length} images processed · {modelName}</p>
           </div>
           <button className="icon-button" onClick={onClose} title="Close results"><X size={18} /></button>
         </header>
@@ -2878,36 +3713,10 @@ function AutoLabelResultsModal({
                 </article>
               );
             })}
+            {visibleCount < filteredResults.length && <div className="results-load-more" ref={loadMoreRef}>Loading more images...</div>}
           </div>
         )}
-        {filteredResults.length > resultsPageSize && (
-          <nav className="results-pager" aria-label="Auto-label result pages">
-            <span>
-              Showing {resultsPage * resultsPageSize + 1}-{Math.min((resultsPage + 1) * resultsPageSize, filteredResults.length)} of {filteredResults.length}
-            </span>
-            <div>
-              <button
-                className="icon-button"
-                onClick={() => {
-                  setResultsPage((page) => Math.max(0, page - 1));
-                  resultsGridRef.current?.scrollTo({ top: 0 });
-                }}
-                disabled={resultsPage === 0 || busy}
-                title="Previous results page"
-              ><ChevronLeft size={16} /></button>
-              <strong>{resultsPage + 1} / {resultsPageCount}</strong>
-              <button
-                className="icon-button"
-                onClick={() => {
-                  setResultsPage((page) => Math.min(resultsPageCount - 1, page + 1));
-                  resultsGridRef.current?.scrollTo({ top: 0 });
-                }}
-                disabled={resultsPage >= resultsPageCount - 1 || busy}
-                title="Next results page"
-              ><ChevronRight size={16} /></button>
-            </div>
-          </nav>
-        )}
+        <div className="results-pager"><span>Showing {visibleResults.length} of {filteredResults.length} images</span></div>
         <footer className="results-modal-footer">
           <span>Select an image to inspect, edit, accept, or reject its predictions.</span>
           <div className="results-modal-actions">
@@ -3478,6 +4287,14 @@ function errorMessage(error: unknown) {
 
 function formatMetric(value: number | null) {
   return value == null ? "-" : value.toFixed(3);
+}
+
+function formatDuration(milliseconds: number) {
+  if (milliseconds < 1000) return `${Math.round(milliseconds)} ms`;
+  const seconds = milliseconds / 1000;
+  if (seconds < 60) return `${seconds.toFixed(1)} s`;
+  const minutes = Math.floor(seconds / 60);
+  return `${minutes}m ${Math.round(seconds % 60)}s`;
 }
 
 function formatBaseModel(baseModel: string, models: ModelItem[]) {

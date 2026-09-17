@@ -75,6 +75,15 @@ def test_pretrained_pose_job_and_outside_frame_keypoints_are_supported():
     assert run_result["suggestions"][0]["source_model_id"] is None
     suggestion_id = run_result["suggestions"][0]["annotation_set_id"]
 
+    retry_payload = {
+        "project_id": project_id,
+        "base_model": "yolo26n-pose.pt",
+        "image_ids": [image_id],
+        "only_unlabeled": True,
+    }
+    pending_retry = client.post("/auto-label-jobs", headers=headers, json=retry_payload)
+    assert pending_retry.status_code == 400, pending_retry.text
+
     accept_response = client.post(
         "/annotations/sets/accept-bulk",
         headers=headers,
@@ -88,14 +97,12 @@ def test_pretrained_pose_job_and_outside_frame_keypoints_are_supported():
         headers=headers,
         json={"project_id": project_id, "default_split": "TRAIN", "auto_split": True},
     )
-    assert negative_dataset_response.status_code == 200, negative_dataset_response.text
-    negative_build = client.post(
-        f"/datasets/versions/{negative_dataset_response.json()['version_id']}/build-yolo",
-        headers=headers,
-    )
-    assert negative_build.status_code == 200, negative_build.text
-    negative_label = next((Path(negative_build.json()["output_dir"]) / "labels" / "train").glob("*.txt"))
-    assert negative_label.read_text() == ""
+    assert negative_dataset_response.status_code == 400, negative_dataset_response.text
+
+    empty_retry = client.post("/auto-label-jobs", headers=headers, json=retry_payload)
+    assert empty_retry.status_code == 200, empty_retry.text
+    assert empty_retry.json()["total_images"] == 1
+    assert [item["image_id"] for item in empty_retry.json()["items"]] == [image_id]
 
     keypoints = [
         {"x": 0.25 + index * 0.02, "y": 0.25 + index * 0.02, "visibility": 2}
@@ -121,6 +128,10 @@ def test_pretrained_pose_job_and_outside_frame_keypoints_are_supported():
     saved_keypoints = annotation_response.json()["annotations"][0]["keypoints"]
     assert len(saved_keypoints) == 17
     assert saved_keypoints[-1]["visibility"] == 0
+
+    labeled_retry = client.post("/auto-label-jobs", headers=headers, json=retry_payload)
+    assert labeled_retry.status_code == 400, labeled_retry.text
+    assert labeled_retry.json()["detail"] == "No unlabeled images available for auto-labeling"
 
     dataset_response = client.post(
         "/datasets/versions",

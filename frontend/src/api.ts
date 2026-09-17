@@ -78,6 +78,8 @@ export type AnnotationSet = {
 
 export type ImageAnnotationStatus = {
   image_id: number;
+  annotation_set_id: number;
+  source_type: "HUMAN" | "MODEL" | "HUMAN_CORRECTED";
   status: "PENDING" | "APPROVED" | "REJECTED";
   box_count: number;
 };
@@ -151,6 +153,11 @@ export type ModelBatchPrediction = {
   results: ModelPrediction[];
 };
 
+export type ModelPredictionStreamEvent = {
+  index: number;
+  result: ModelPrediction;
+};
+
 export type AutoLabelJob = {
   job_id: number;
   project_id: number;
@@ -180,6 +187,8 @@ export type YoloImportResult = {
 export type ArchiveInspection = {
   archive_type: "YOLO" | "IMAGES";
   image_count: number;
+  labeled_image_count: number;
+  unlabeled_image_count: number;
   class_names: string[];
 };
 
@@ -267,6 +276,58 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return response.json() as Promise<T>;
 }
 
+async function requestNdjson<T>(
+  path: string,
+  init: RequestInit,
+  onItem: (item: T) => void | Promise<void>,
+): Promise<void> {
+  const response = await requestResponse(path, init);
+  if (!response.ok) throw new Error(await response.text() || `${response.status} ${response.statusText}`);
+  if (!response.body) throw new Error("Streaming response is not available");
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  while (true) {
+    const { done, value } = await reader.read();
+    buffer += decoder.decode(value, { stream: !done });
+    const lines = buffer.split("\n");
+    buffer = lines.pop() ?? "";
+    for (const line of lines.filter(Boolean)) {
+      await onItem(JSON.parse(line) as T);
+    }
+    if (done) break;
+  }
+  if (buffer.trim()) await onItem(JSON.parse(buffer) as T);
+}
+
+async function streamPredictions(
+  streamPath: string,
+  fallbackPath: string,
+  files: File[],
+  onResult: (event: ModelPredictionStreamEvent) => void | Promise<void>,
+): Promise<void> {
+  const streamForm = new FormData();
+  files.forEach((file) => streamForm.append("files", file));
+  try {
+    await requestNdjson<ModelPredictionStreamEvent>(
+      streamPath,
+      { method: "POST", body: streamForm },
+      onResult,
+    );
+  } catch {
+    const fallbackForm = new FormData();
+    files.forEach((file) => fallbackForm.append("files", file));
+    const fallback = await request<ModelBatchPrediction>(fallbackPath, {
+      method: "POST",
+      body: fallbackForm,
+    });
+    for (const [index, result] of fallback.results.entries()) {
+      await onResult({ index, result });
+    }
+  }
+}
+
 export const api = {
   register: (payload: { email: string; username?: string; password: string }) => request<AuthSession>("/auth/register", {
     method: "POST",
@@ -317,12 +378,38 @@ export const api = {
       { method: "POST", body: form },
     );
   },
+  streamModelPredictions: (
+    modelId: number,
+    files: File[],
+    confidenceThreshold: number,
+    onResult: (event: ModelPredictionStreamEvent) => void | Promise<void>,
+  ) => {
+    return streamPredictions(
+      `/models/${modelId}/predict-batch-stream?confidence_threshold=${encodeURIComponent(confidenceThreshold)}`,
+      `/models/${modelId}/predict-batch?confidence_threshold=${encodeURIComponent(confidenceThreshold)}`,
+      files,
+      onResult,
+    );
+  },
   predictPretrainedPoseBatch: (projectId: number, files: File[], confidenceThreshold: number) => {
     const form = new FormData();
     files.forEach((file) => form.append("files", file));
     return request<ModelBatchPrediction>(
       `/models/pose-pretrained/predict-batch?project_id=${projectId}&confidence_threshold=${encodeURIComponent(confidenceThreshold)}`,
       { method: "POST", body: form },
+    );
+  },
+  streamPretrainedPosePredictions: (
+    projectId: number,
+    files: File[],
+    confidenceThreshold: number,
+    onResult: (event: ModelPredictionStreamEvent) => void | Promise<void>,
+  ) => {
+    return streamPredictions(
+      `/models/pose-pretrained/predict-batch-stream?project_id=${projectId}&confidence_threshold=${encodeURIComponent(confidenceThreshold)}`,
+      `/models/pose-pretrained/predict-batch?project_id=${projectId}&confidence_threshold=${encodeURIComponent(confidenceThreshold)}`,
+      files,
+      onResult,
     );
   },
   downloadDataset: async (versionId: number) => {
@@ -370,15 +457,17 @@ export const api = {
     projectId: number,
     file: File,
     classNames?: string,
-    maxImages?: number | null,
+    maxLabeledImages?: number | null,
     classIndexes?: string,
+    importRemainingImages = true,
   ) => {
     const form = new FormData();
     form.append("file", file);
     const classQuery = classNames ? `&class_names=${encodeURIComponent(classNames)}` : "";
-    const limitQuery = maxImages ? `&max_images=${maxImages}` : "";
+    const limitQuery = maxLabeledImages != null ? `&max_labeled_images=${maxLabeledImages}` : "";
     const indexesQuery = classIndexes ? `&class_indexes=${encodeURIComponent(classIndexes)}` : "";
-    return request<YoloImportResult>(`/images/import-yolo?project_id=${projectId}${classQuery}${limitQuery}${indexesQuery}`, {
+    const remainingQuery = `&import_remaining_images=${importRemainingImages}`;
+    return request<YoloImportResult>(`/images/import-yolo?project_id=${projectId}${classQuery}${limitQuery}${indexesQuery}${remainingQuery}`, {
       method: "POST",
       body: form,
     });
@@ -449,6 +538,9 @@ export const api = {
     method: "POST",
   }),
   listModels: (projectId: number) => request<ModelItem[]>(`/models/project/${projectId}`),
+  deleteModel: (modelId: number) => request<void>(`/models/${modelId}`, {
+    method: "DELETE",
+  }),
   listAutoLabelJobs: (projectId: number) => request<AutoLabelJob[]>(`/auto-label-jobs/project/${projectId}`),
   createAutoLabelJob: (payload: unknown) => request<AutoLabelJob>("/auto-label-jobs", {
     method: "POST",

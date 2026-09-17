@@ -52,7 +52,13 @@ def test_archive_inspection_and_plain_image_import():
         files={"file": ("images.zip", image_archive, "application/zip")},
     )
     assert inspection.status_code == 200, inspection.text
-    assert inspection.json() == {"archive_type": "IMAGES", "image_count": 2, "class_names": []}
+    assert inspection.json() == {
+        "archive_type": "IMAGES",
+        "image_count": 2,
+        "labeled_image_count": 0,
+        "unlabeled_image_count": 2,
+        "class_names": [],
+    }
 
     imported = client.post(
         f"/images/import-image-archive?project_id={project['project_id']}",
@@ -76,8 +82,54 @@ def test_archive_inspection_and_plain_image_import():
     assert yolo_inspection.json() == {
         "archive_type": "YOLO",
         "image_count": 1,
+        "labeled_image_count": 1,
+        "unlabeled_image_count": 0,
         "class_names": ["person"],
     }
+
+
+def test_yolo_label_limit_can_keep_or_skip_remaining_images():
+    headers = _register("yolo-label-limit")
+    project = client.post(
+        "/projects",
+        headers=headers,
+        json={"name": "YOLO label limit", "task_type": "OBJECT_DETECTION"},
+    ).json()
+    yolo_archive = _zip_bytes({
+        "data.yaml": b"names: [person]\n",
+        "images/train/one.png": _png_bytes(),
+        "images/train/two.png": _png_bytes(),
+        "images/train/three.png": _png_bytes(),
+        "labels/train/one.txt": b"0 0.5 0.5 0.5 0.5\n",
+        "labels/train/two.txt": b"0 0.4 0.4 0.2 0.2\n",
+    })
+
+    inspection = client.post(
+        "/images/inspect-archive",
+        headers=headers,
+        files={"file": ("dataset.zip", yolo_archive, "application/zip")},
+    )
+    assert inspection.status_code == 200, inspection.text
+    assert inspection.json()["labeled_image_count"] == 2
+    assert inspection.json()["unlabeled_image_count"] == 1
+
+    keep_remaining = client.post(
+        f"/images/import-yolo?project_id={project['project_id']}&max_labeled_images=1&import_remaining_images=true",
+        headers=headers,
+        files={"file": ("dataset.zip", yolo_archive, "application/zip")},
+    )
+    assert keep_remaining.status_code == 200, keep_remaining.text
+    assert keep_remaining.json()["imported_images"] == 3
+    assert keep_remaining.json()["imported_annotation_sets"] == 1
+
+    skip_remaining = client.post(
+        f"/images/import-yolo?project_id={project['project_id']}&max_labeled_images=1&import_remaining_images=false",
+        headers=headers,
+        files={"file": ("dataset.zip", yolo_archive, "application/zip")},
+    )
+    assert skip_remaining.status_code == 200, skip_remaining.text
+    assert skip_remaining.json()["imported_images"] == 1
+    assert skip_remaining.json()["imported_annotation_sets"] == 1
 
 
 def test_unused_dataset_version_can_be_deleted():
@@ -115,7 +167,13 @@ def test_unused_dataset_version_can_be_deleted():
         headers=headers,
     )
     assert statuses.status_code == 200, statuses.text
-    assert statuses.json() == [{"image_id": image["image_id"], "status": "APPROVED", "box_count": 1}]
+    assert statuses.json() == [{
+        "image_id": image["image_id"],
+        "annotation_set_id": annotation.json()["annotation_set_id"],
+        "source_type": "HUMAN",
+        "status": "APPROVED",
+        "box_count": 1,
+    }]
     version = client.post(
         "/datasets/versions",
         headers=headers,
@@ -125,6 +183,95 @@ def test_unused_dataset_version_can_be_deleted():
     deleted = client.delete(f"/datasets/versions/{version['version_id']}", headers=headers)
     assert deleted.status_code == 204, deleted.text
     assert client.get(f"/datasets/projects/{project['project_id']}/versions", headers=headers).json() == []
+
+
+def test_dataset_version_excludes_approved_images_without_labels():
+    headers = _register("dataset-no-empty-labels")
+    project = client.post(
+        "/projects",
+        headers=headers,
+        json={"name": "Labeled dataset only", "task_type": "OBJECT_DETECTION"},
+    ).json()
+    label_class = client.post(
+        "/classes",
+        headers=headers,
+        json={"project_id": project["project_id"], "name": "object", "class_index": 0, "color": "#16a34a"},
+    ).json()
+    labeled_image = client.post(
+        f"/images/upload?project_id={project['project_id']}",
+        headers=headers,
+        files={"file": ("labeled.png", _png_bytes(), "image/png")},
+    ).json()
+    empty_image = client.post(
+        f"/images/upload?project_id={project['project_id']}",
+        headers=headers,
+        files={"file": ("empty.png", _png_bytes(), "image/png")},
+    ).json()
+    client.post(
+        f"/annotations/images/{labeled_image['image_id']}/annotation-sets",
+        headers=headers,
+        json={"annotations": [{
+            "class_id": label_class["class_id"],
+            "x_min": 0.1,
+            "y_min": 0.1,
+            "x_max": 0.9,
+            "y_max": 0.9,
+            "confidence": None,
+        }]},
+    )
+    empty_annotation = client.post(
+        f"/annotations/images/{empty_image['image_id']}/annotation-sets",
+        headers=headers,
+        json={"annotations": []},
+    )
+    assert empty_annotation.status_code == 200, empty_annotation.text
+
+    version = client.post(
+        "/datasets/versions",
+        headers=headers,
+        json={"project_id": project["project_id"], "default_split": "TRAIN", "auto_split": True},
+    )
+    assert version.status_code == 200, version.text
+    assert [item["image_id"] for item in version.json()["items"]] == [labeled_image["image_id"]]
+
+    invalid_selection = client.post(
+        "/datasets/versions",
+        headers=headers,
+        json={"project_id": project["project_id"], "image_ids": [empty_image["image_id"]]},
+    )
+    assert invalid_selection.status_code == 400, invalid_selection.text
+
+    empty_selection = client.post(
+        "/datasets/versions",
+        headers=headers,
+        json={"project_id": project["project_id"], "image_ids": []},
+    )
+    assert empty_selection.status_code == 422, empty_selection.text
+
+    added_label = client.post(
+        f"/annotations/images/{empty_image['image_id']}/annotation-sets",
+        headers=headers,
+        json={"annotations": [{
+            "class_id": label_class["class_id"],
+            "x_min": 0.1,
+            "y_min": 0.1,
+            "x_max": 0.9,
+            "y_max": 0.9,
+            "confidence": None,
+        }]},
+    )
+    assert added_label.status_code == 200, added_label.text
+    subset = client.post(
+        "/datasets/versions",
+        headers=headers,
+        json={
+            "project_id": project["project_id"],
+            "image_ids": [empty_image["image_id"], empty_image["image_id"]],
+        },
+    )
+    assert subset.status_code == 200, subset.text
+    assert [item["image_id"] for item in subset.json()["items"]] == [empty_image["image_id"]]
+    assert subset.json()["items"][0]["annotation_set_id"] == added_label.json()["annotation_set_id"]
 
 
 def test_class_name_and_color_can_be_updated_without_changing_index():

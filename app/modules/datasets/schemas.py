@@ -1,7 +1,7 @@
 from datetime import datetime
 from enum import StrEnum
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class DatasetSplit(StrEnum):
@@ -12,6 +12,7 @@ class DatasetSplit(StrEnum):
 
 class DatasetVersionCreate(BaseModel):
     project_id: int
+    image_ids: list[int] | None = Field(default=None, min_length=1)
     preprocess_config: dict | None = None
     augmentation_config: dict | None = None
     default_split: DatasetSplit = DatasetSplit.TRAIN
