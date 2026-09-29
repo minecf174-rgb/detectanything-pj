@@ -1057,6 +1057,10 @@ export function App() {
     });
   };
 
+  const resumeYolo = (runId: number) => {
+    void runAction("Resume training", () => api.resumeYoloTraining(runId));
+  };
+
   const chooseTestImages = (fileList: FileList | null) => {
     const files = Array.from(fileList ?? []);
     if (files.length === 0) return;
@@ -1918,6 +1922,13 @@ export function App() {
                 <Metric label="Status" value={runs[runs.length - 1]?.status ?? "-"} />
                 <Metric label="Progress" value={`${Math.round(runs[runs.length - 1]?.progress_percent ?? 0)}%`} />
                 <Metric label="Models produced" value={models.length} />
+                {[...runs].reverse().find((run) => run.can_resume) && (() => {
+                  const resumableRun = [...runs].reverse().find((run) => run.can_resume)!;
+                  return <div className="training-recovery">
+                    <span>Run #{resumableRun.training_run_id} stopped before completion. Its latest checkpoint is available.</span>
+                    <button className="primary" onClick={() => resumeYolo(resumableRun.training_run_id)} disabled={busy}><RotateCcw size={16} /> Resume training</button>
+                  </div>;
+                })()}
               </div>
             </section>
           </main>

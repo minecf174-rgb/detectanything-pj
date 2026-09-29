@@ -105,6 +105,7 @@ export type TrainingRun = {
   status: string;
   progress_percent: number | null;
   error_message: string | null;
+  can_resume: boolean;
   created_at: string;
   metrics: {
     precision: number | null;
@@ -535,6 +536,9 @@ export const api = {
     body: JSON.stringify(payload),
   }),
   startYoloTraining: (runId: number) => request<{ training_run: TrainingRun; model: ModelItem }>(`/training-runs/${runId}/start-local-yolo`, {
+    method: "POST",
+  }),
+  resumeYoloTraining: (runId: number) => request<{ training_run: TrainingRun; model: ModelItem }>(`/training-runs/${runId}/resume-local-yolo`, {
     method: "POST",
   }),
   listModels: (projectId: number) => request<ModelItem[]>(`/models/project/${projectId}`),

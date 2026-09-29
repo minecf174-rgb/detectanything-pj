@@ -132,6 +132,54 @@ def test_yolo_label_limit_can_keep_or_skip_remaining_images():
     assert skip_remaining.json()["imported_annotation_sets"] == 1
 
 
+def test_yolo_pose_zip_imports_box_and_keypoints():
+    headers = _register("yolo-pose-import")
+    project = client.post(
+        "/projects",
+        headers=headers,
+        json={"name": "YOLO pose import", "task_type": "POSE_ESTIMATION"},
+    ).json()
+    keypoints = " ".join(
+        f"{0.20 + index * 0.01:.2f} {0.30 + index * 0.01:.2f} {0 if index == 16 else 2}"
+        for index in range(17)
+    )
+    yolo_archive = _zip_bytes({
+        "data.yaml": b"names: [person]\nkpt_shape: [17, 3]\n",
+        "images/train/pose.png": _png_bytes(),
+        "labels/train/pose.txt": f"0 0.5 0.5 0.4 0.6 {keypoints}\n".encode(),
+    })
+
+    imported = client.post(
+        f"/images/import-yolo?project_id={project['project_id']}",
+        headers=headers,
+        files={"file": ("pose-dataset.zip", yolo_archive, "application/zip")},
+    )
+    assert imported.status_code == 200, imported.text
+    assert imported.json()["imported_images"] == 1
+    assert imported.json()["imported_annotation_sets"] == 1
+    assert imported.json()["imported_boxes"] == 1
+
+    images = client.get(f"/images/project/{project['project_id']}", headers=headers).json()
+    annotation_sets = client.get(
+        f"/annotations/images/{images[0]['image_id']}/annotation-sets",
+        headers=headers,
+    )
+    assert annotation_sets.status_code == 200, annotation_sets.text
+    annotation = annotation_sets.json()[0]["annotations"][0]
+    assert annotation["x_min"] == 0.3
+    assert annotation["y_min"] == 0.2
+    assert annotation["x_max"] == 0.7
+    assert annotation["y_max"] == 0.8
+    assert len(annotation["keypoints"]) == 17
+    assert annotation["keypoints"][0] == {
+        "keypoint_index": 0,
+        "x": 0.2,
+        "y": 0.3,
+        "visibility": 2,
+    }
+    assert annotation["keypoints"][16]["visibility"] == 0
+
+
 def test_unused_dataset_version_can_be_deleted():
     headers = _register("dataset")
     project = client.post(

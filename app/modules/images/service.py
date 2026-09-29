@@ -142,7 +142,7 @@ class ImageService:
         class_indexes: str | None = None,
         import_remaining_images: bool = True,
     ):
-        require_project_owner(self.db, current_user, project_id)
+        project = require_project_owner(self.db, current_user, project_id)
 
         data = await file.read()
         if not data:
@@ -191,6 +191,7 @@ class ImageService:
                     boxes = [] if label_name is None else self._read_yolo_label_file(
                         archive.read(label_name).decode("utf-8"),
                         classes_by_source_index,
+                        project.task_type,
                     )
                     include_labels = bool(boxes) and (
                         max_labeled_images is None or selected_labeled_images < max_labeled_images
@@ -235,20 +236,28 @@ class ImageService:
                     )
                     self.db.add(annotation_set)
                     self.db.flush()
-                    self.db.add_all(
-                        [
-                            Annotation(
-                                annotation_set_id=annotation_set.annotation_set_id,
-                                class_id=box["class_id"],
-                                x_min=box["x_min"],
-                                y_min=box["y_min"],
-                                x_max=box["x_max"],
-                                y_max=box["y_max"],
-                                confidence=None,
+                    for box in boxes:
+                        annotation = Annotation(
+                            annotation_set_id=annotation_set.annotation_set_id,
+                            class_id=box["class_id"],
+                            x_min=box["x_min"],
+                            y_min=box["y_min"],
+                            x_max=box["x_max"],
+                            y_max=box["y_max"],
+                            confidence=None,
+                        )
+                        self.db.add(annotation)
+                        self.db.flush()
+                        self.db.add_all([
+                            AnnotationKeypoint(
+                                annotation_id=annotation.annotation_id,
+                                keypoint_index=index,
+                                x=keypoint["x"],
+                                y=keypoint["y"],
+                                visibility=keypoint["visibility"],
                             )
-                            for box in boxes
-                        ]
-                    )
+                            for index, keypoint in enumerate(box.get("keypoints", []))
+                        ])
                     imported_sets += 1
                     imported_boxes += len(boxes)
 
@@ -535,7 +544,12 @@ class ImageService:
                 return candidate
         return next((name for name in names if Path(name).stem == image_path.stem and Path(name).suffix == ".txt"), None)
 
-    def _read_yolo_label_file(self, text: str, classes_by_source_index: dict[int, LabelClass]) -> list[dict]:
+    def _read_yolo_label_file(
+        self,
+        text: str,
+        classes_by_source_index: dict[int, LabelClass],
+        task_type: str,
+    ) -> list[dict]:
         boxes = []
         for line in text.splitlines():
             parts = line.strip().split()
@@ -547,7 +561,30 @@ class ImageService:
                 continue
 
             values = [float(value) for value in parts[1:]]
-            if len(values) == 4:
+            keypoints: list[dict] = []
+            if task_type == "POSE_ESTIMATION":
+                if len(values) != 4 + (17 * 3):
+                    continue
+                x_center, y_center, width, height = values[:4]
+                x_min = self._clamp(x_center - width / 2)
+                y_min = self._clamp(y_center - height / 2)
+                x_max = self._clamp(x_center + width / 2)
+                y_max = self._clamp(y_center + height / 2)
+                pose_values = values[4:]
+                for index in range(17):
+                    x, y, raw_visibility = pose_values[index * 3:(index + 1) * 3]
+                    visibility = int(raw_visibility)
+                    if raw_visibility != visibility or visibility not in {0, 1, 2}:
+                        keypoints = []
+                        break
+                    keypoints.append({
+                        "x": self._clamp(x),
+                        "y": self._clamp(y),
+                        "visibility": visibility,
+                    })
+                if len(keypoints) != 17:
+                    continue
+            elif len(values) == 4:
                 x_center, y_center, width, height = values
                 x_min = self._clamp(x_center - width / 2)
                 y_min = self._clamp(y_center - height / 2)
@@ -574,6 +611,7 @@ class ImageService:
                     "y_min": y_min,
                     "x_max": x_max,
                     "y_max": y_max,
+                    "keypoints": keypoints,
                 }
             )
         return boxes

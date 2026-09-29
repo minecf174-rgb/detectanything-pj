@@ -1,4 +1,6 @@
 from datetime import datetime, timezone
+from pathlib import Path
+from shutil import rmtree
 
 from fastapi import HTTPException
 from sqlalchemy.exc import IntegrityError
@@ -13,6 +15,7 @@ from app.ml.trainers.ultralytics_yolo import UltralyticsYoloTrainer
 from app.modules.datasets.models import DatasetVersion
 from app.modules.models.models import Model
 from app.modules.projects.models import User
+from app.modules.training.models import TrainingRun
 from app.modules.training.repository import TrainingRepository
 from app.modules.training.schemas import TrainingRunCreate
 
@@ -61,13 +64,42 @@ class TrainingService:
 
     def list_project_runs(self, project_id: int, current_user: User):
         require_project_owner(self.db, current_user, project_id)
-        return self.repository.list_by_project(project_id)
+        runs = self.repository.list_by_project(project_id)
+        for run in runs:
+            run.can_resume = self._checkpoint_path(run).exists() and run.status in {
+                "FAILED", "INTERRUPTED"
+            }
+        return runs
 
     def start_local_mock(self, training_run_id: int, current_user: User):
         return self._start_local(training_run_id, trainer_type="mock", current_user=current_user)
 
     def start_local_yolo(self, training_run_id: int, current_user: User):
         return self._start_local(training_run_id, trainer_type="ultralytics", current_user=current_user)
+
+    def resume_local_yolo(self, training_run_id: int, current_user: User):
+        run = self.repository.get_run(training_run_id)
+        if run is None:
+            raise HTTPException(status_code=404, detail="Training run not found")
+        require_project_owner(self.db, current_user, run.project_id)
+        if run.status not in {"FAILED", "INTERRUPTED"}:
+            raise HTTPException(status_code=409, detail=f"Training run is {run.status}")
+        checkpoint_path = self._checkpoint_path(run)
+        if not checkpoint_path.exists():
+            raise HTTPException(status_code=404, detail="Training checkpoint not found")
+
+        run.status = "RUNNING"
+        run.error_message = None
+        run.finished_at = None
+        self.db.commit()
+
+        try:
+            dataset_dir = YoloDatasetBuilder(self.db).build(run.version_id)
+            result = UltralyticsYoloTrainer().resume(checkpoint_path)
+            return self._complete_run(run, result, dataset_dir)
+        except Exception as exc:
+            self._mark_failed(training_run_id, exc)
+            raise
 
     def _start_local(self, training_run_id: int, trainer_type: str, current_user: User):
         run = self.repository.get_run(training_run_id)
@@ -80,48 +112,109 @@ class TrainingService:
         run.status = "RUNNING"
         run.progress_percent = 10
         run.started_at = datetime.now(timezone.utc)
-        self.db.flush()
+        run.error_message = None
+        run.finished_at = None
+        self.db.commit()
 
         try:
             dataset_dir = YoloDatasetBuilder(self.db).build(run.version_id)
             result = self._run_trainer(run, dataset_dir, trainer_type)
-            metrics = result["metrics"]
-
-            self.repository.add_metric(run.training_run_id, metrics)
-            model_version = self.repository.next_model_version(run.project_id)
             artifact_name = "best_mock.pt" if trainer_type == "mock" else "best.pt"
-            weights_object_key = f"models/project_{run.project_id}/model_{model_version}/{artifact_name}"
-            self._save_weights(weights_object_key, result)
-            model = self.repository.create_model(
-                project_id=run.project_id,
-                training_run_id=run.training_run_id,
-                version=model_version,
-                weights_object_key=weights_object_key,
-                metrics=metrics,
-            )
-
-            run.status = "COMPLETED"
-            run.progress_percent = 100
-            run.finished_at = datetime.now(timezone.utc)
-            self.db.commit()
+            return self._complete_run(run, result, dataset_dir, artifact_name)
         except IntegrityError as exc:
-            self.db.rollback()
+            self._mark_failed(training_run_id, exc)
             raise HTTPException(status_code=409, detail="Model version already exists") from exc
         except Exception as exc:
-            self.db.rollback()
-            failed_run = self.repository.get_run(training_run_id)
-            if failed_run is not None:
-                failed_run.status = "FAILED"
-                failed_run.error_message = str(exc)
-                failed_run.finished_at = datetime.now(timezone.utc)
-                self.db.commit()
+            self._mark_failed(training_run_id, exc)
             raise
 
-        return {
+    def _complete_run(self, run, result: dict, dataset_dir: Path, artifact_name: str = "best.pt"):
+        metrics = result["metrics"]
+        self.repository.add_metric(run.training_run_id, metrics)
+        model_version = self.repository.next_model_version(run.project_id)
+        weights_object_key = f"models/project_{run.project_id}/model_{model_version}/{artifact_name}"
+        self._save_weights(weights_object_key, result)
+        model = self.repository.create_model(
+            project_id=run.project_id,
+            training_run_id=run.training_run_id,
+            version=model_version,
+            weights_object_key=weights_object_key,
+            metrics=metrics,
+        )
+        run.status = "COMPLETED"
+        run.progress_percent = 100
+        run.error_message = None
+        run.finished_at = datetime.now(timezone.utc)
+        self.db.commit()
+        response = {
             "training_run": self.repository.get_run(run.training_run_id),
             "model": model,
             "dataset_dir": str(dataset_dir),
         }
+        self._cleanup_completed_run(run)
+        return response
+
+    def _mark_failed(self, training_run_id: int, exc: Exception) -> None:
+        self.db.rollback()
+        failed_run = self.repository.get_run(training_run_id)
+        if failed_run is None:
+            return
+        failed_run.status = "FAILED"
+        failed_run.error_message = str(exc)
+        failed_run.finished_at = datetime.now(timezone.utc)
+        self.db.commit()
+
+    def _checkpoint_path(self, run) -> Path:
+        return (
+            Path(get_settings().temp_root)
+            / "training"
+            / "runs"
+            / f"training_run_{run.training_run_id}"
+            / "weights"
+            / "last.pt"
+        )
+
+    def _cleanup_completed_run(self, run) -> None:
+        run_dir = self._checkpoint_path(run).parents[1]
+        rmtree(run_dir, ignore_errors=True)
+
+        another_run_is_active = self.db.query(TrainingRun).filter(
+            TrainingRun.version_id == run.version_id,
+            TrainingRun.training_run_id != run.training_run_id,
+            TrainingRun.status == "RUNNING",
+        ).first() is not None
+        if another_run_is_active:
+            return
+
+        dataset_dir = (
+            Path(get_settings().temp_root)
+            / "training"
+            / f"dataset_version_{run.version_id}"
+        )
+        rmtree(dataset_dir, ignore_errors=True)
+        dataset_dir.with_suffix(".zip").unlink(missing_ok=True)
+
+    @classmethod
+    def recover_interrupted_runs(cls, db: Session) -> int:
+        service = cls(db)
+        recovered = 0
+        runs = db.query(TrainingRun).filter(TrainingRun.status.in_({"RUNNING", "QUEUED"})).all()
+        for run in runs:
+            if run.status == "QUEUED" and not service._checkpoint_path(run).exists():
+                continue
+            run.status = "INTERRUPTED" if service._checkpoint_path(run).exists() else "FAILED"
+            run.error_message = (
+                "Training was interrupted. Resume from the latest checkpoint."
+                if run.status == "INTERRUPTED"
+                else "Training stopped before a resumable checkpoint was written."
+            )
+            run.finished_at = datetime.now(timezone.utc)
+            recovered += 1
+        if recovered:
+            db.commit()
+        for run in db.query(TrainingRun).filter_by(status="COMPLETED").all():
+            service._cleanup_completed_run(run)
+        return recovered
 
     def _run_trainer(self, run, dataset_dir, trainer_type: str):
         config = dict(run.training_config or {})

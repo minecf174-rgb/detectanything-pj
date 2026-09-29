@@ -3389,6 +3389,27 @@ h2 {
   grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
+.training-recovery {
+  align-items: center;
+  background: #fff8e8;
+  border: 1px solid #e7c56a;
+  border-radius: 7px;
+  color: #5b4715;
+  display: flex;
+  gap: 12px;
+  justify-content: space-between;
+  padding: 12px;
+}
+
+.training-recovery > span {
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.training-recovery > button {
+  flex: 0 0 auto;
+}
+
 .model-version-list {
   display: grid;
   gap: 12px;

@@ -33,6 +33,7 @@ class UltralyticsYoloTrainer(Trainer):
             "project": str(runs_root),
             "name": run_name,
             "exist_ok": True,
+            "save": True,
             **train_config,
         }
 
@@ -50,6 +51,33 @@ class UltralyticsYoloTrainer(Trainer):
         metrics = self._extract_metrics(results)
         return {
             "metrics": metrics,
+            "weights_path": best_path,
+            "run_dir": save_dir,
+        }
+
+    def resume(self, checkpoint_path: Path) -> dict[str, Any]:
+        try:
+            from ultralytics import YOLO
+        except ImportError as exc:
+            raise HTTPException(
+                status_code=500,
+                detail="ultralytics is not installed. Run: pip install -e .",
+            ) from exc
+
+        if not checkpoint_path.exists():
+            raise HTTPException(status_code=404, detail="Training checkpoint not found")
+
+        model = YOLO(str(checkpoint_path))
+        results = model.train(resume=True)
+        save_dir = Path(getattr(results, "save_dir", checkpoint_path.parents[1]))
+        best_path = save_dir / "weights" / "best.pt"
+        last_path = save_dir / "weights" / "last.pt"
+        if not best_path.exists() and last_path.exists():
+            best_path = last_path
+        if not best_path.exists():
+            raise HTTPException(status_code=500, detail=f"Resumed training did not produce weights in {save_dir}")
+        return {
+            "metrics": self._extract_metrics(results),
             "weights_path": best_path,
             "run_dir": save_dir,
         }

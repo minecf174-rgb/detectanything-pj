@@ -8,6 +8,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 class TrainingStatus(StrEnum):
     QUEUED = "QUEUED"
     RUNNING = "RUNNING"
+    INTERRUPTED = "INTERRUPTED"
     COMPLETED = "COMPLETED"
     FAILED = "FAILED"
     CANCELLED = "CANCELLED"
@@ -111,6 +112,7 @@ class TrainingRunRead(BaseModel):
     finished_at: datetime | None
     created_at: datetime
     updated_at: datetime | None
+    can_resume: bool = False
     metrics: list[TrainingMetricRead] = []
 
     model_config = {"from_attributes": True}

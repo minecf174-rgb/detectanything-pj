@@ -44,3 +44,12 @@ def start_local_yolo_training(
     db: Session = Depends(get_db),
 ):
     return TrainingService(db).start_local_yolo(training_run_id, current_user)
+
+
+@router.post("/{training_run_id}/resume-local-yolo", response_model=TrainingStartRead)
+def resume_local_yolo_training(
+    training_run_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    return TrainingService(db).resume_local_yolo(training_run_id, current_user)
