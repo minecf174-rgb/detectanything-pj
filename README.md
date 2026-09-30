@@ -161,13 +161,17 @@ python -c 'import secrets; print(secrets.token_urlsafe(48))'
 ```dotenv
 CORS_ORIGINS=https://app.example.com,http://127.0.0.1:5173,http://localhost:5173
 AUTH_JWT_SECRET=<GENERATED_SECRET>
-VITE_API_BASE_URL=https://api.example.com
+VITE_API_BASE_URL=http://127.0.0.1:8000,https://api.example.com
 VITE_ALLOWED_HOSTS=app.example.com
 ```
 
-Backend ใช้ `CORS_ORIGINS` และ `AUTH_JWT_SECRET` ส่วน Vite ใช้เฉพาะค่าที่ขึ้นต้น `VITE_` จากไฟล์เดียวกัน `VITE_ALLOWED_HOSTS` ใช้เฉพาะ hostname ไม่ใส่ `https://` ส่วน `VITE_API_BASE_URL` ต้องใส่ protocol
+Backend ใช้ `CORS_ORIGINS` และ `AUTH_JWT_SECRET` ส่วน Vite ใช้เฉพาะค่าที่ขึ้นต้น `VITE_` จากไฟล์เดียวกัน `VITE_ALLOWED_HOSTS` ใช้เฉพาะ hostname ไม่ใส่ `https://` ส่วน `VITE_API_BASE_URL` ใส่ API URL เต็มพร้อม `http://` หรือ `https://` คั่นหลาย URL ด้วยเครื่องหมายจุลภาค (ค่า URL เดียวแบบเดิมก็ใช้ได้)
 
-localhost ยังคงอยู่ใน `CORS_ORIGINS` จึงใช้เว็บแบบ local ได้ด้วย เมื่อต้องการให้ Frontend กลับไปเรียก Backend local ให้เปลี่ยน `VITE_API_BASE_URL` เป็น `http://127.0.0.1:8000` หลังแก้ `.env` ต้อง restart ทั้ง Backend และ Frontend ห้าม commit `.env`
+เมื่อเปิด Frontend ผ่าน `127.0.0.1` หรือ `localhost` ระบบจะเลือก Backend local ที่ระบุไว้ก่อน แล้วลอง public API หาก local เชื่อมต่อไม่ได้ เมื่อเปิดผ่าน hostname สาธารณะ ระบบจะใช้ HTTPS public API เท่านั้น เพราะ `127.0.0.1` ใน browser ของผู้ใช้อื่นหมายถึงเครื่องของผู้ใช้นั้นเอง หากเชื่อมต่อ API ระหว่างอ่านข้อมูลไม่ได้ จะลอง URL ถัดไป; ก่อนส่งคำสั่งเขียนข้อมูลครั้งแรก ระบบจะตรวจว่าปลายทางใช้งานได้ และไม่ส่งคำสั่งเดิมซ้ำอัตโนมัติหากการเชื่อมต่อขาดกลางทาง เพื่อเลี่ยงข้อมูลซ้ำ การสลับ URL ไม่แก้ HTTP error เช่น 401/500 หรือ CORS ที่ตั้งค่าไม่ถูกต้อง
+
+URL ทั้งสองควรชี้ไปยัง Backend และฐานข้อมูลชุดเดียวกัน เพื่อให้บัญชีและข้อมูลโปรเจกต์ตรงกันหลังสลับปลายทาง
+
+localhost ยังคงอยู่ใน `CORS_ORIGINS` จึงใช้เว็บแบบ local ได้ด้วย หากต้องการใช้ Backend local อย่างเดียวให้ตั้ง `VITE_API_BASE_URL=http://127.0.0.1:8000` หลังแก้ `.env` ต้อง restart ทั้ง Backend และ Frontend ห้าม commit `.env`
 
 ### 2. ตั้งค่า Tunnel
 

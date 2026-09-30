@@ -1,6 +1,35 @@
-const configuredApiBase = import.meta.env.VITE_API_BASE_URL?.trim();
+const configuredApiBases = (import.meta.env.VITE_API_BASE_URL as string | undefined)?.trim() || "http://127.0.0.1:8000";
 
-export const API_BASE = (configuredApiBase || "http://127.0.0.1:8000").replace(/\/+$/, "");
+function isLoopback(hostname: string) {
+  return hostname === "localhost" || hostname === "127.0.0.1" || hostname === "[::1]";
+}
+
+function apiBaseUrls(): string[] {
+  const frontendIsLocal = isLoopback(window.location.hostname);
+  const urls = configuredApiBases.split(",").map((entry: string) => entry.trim()).filter(Boolean);
+  const parsed = urls.map((entry: string) => {
+    try {
+      const url = new URL(entry);
+      if (!["http:", "https:"].includes(url.protocol) || url.username || url.password || url.search || url.hash) {
+        return null;
+      }
+      return url.href.replace(/\/+$/, "");
+    } catch {
+      return null;
+    }
+  }).filter((url: string | null): url is string => url !== null);
+  const eligible = parsed.filter((entry: string) => {
+    const url = new URL(entry);
+    return frontendIsLocal || (url.protocol === "https:" && !isLoopback(url.hostname));
+  });
+  return [...new Set(eligible)].sort((left, right) => {
+    if (!frontendIsLocal) return 0;
+    return Number(isLoopback(new URL(right).hostname)) - Number(isLoopback(new URL(left).hostname));
+  });
+}
+
+const API_BASES = apiBaseUrls();
+export const API_BASE = API_BASES[0] ?? "";
 
 export type User = {
   user_id: number;
@@ -210,7 +239,14 @@ function loadSession(): AuthSession | null {
 
 let activeSession: AuthSession | null = loadSession();
 let refreshPromise: Promise<boolean> | null = null;
+let selectedApiBase: string | null = null;
 const imageBlobRequests = new Map<number, Promise<Blob>>();
+
+export class ApiHttpError extends Error {
+  constructor(message: string, readonly status: number) {
+    super(message);
+  }
+}
 
 export function getAuthSession() {
   return activeSession;
@@ -235,13 +271,64 @@ function headersFor(init?: RequestInit) {
   return headers;
 }
 
-async function refreshSession(): Promise<boolean> {
+function orderedApiBases(preferredBase?: string): string[] {
+  if (preferredBase) return [preferredBase];
+  if (selectedApiBase && API_BASES.includes(selectedApiBase)) {
+    return [selectedApiBase, ...API_BASES.filter((base) => base !== selectedApiBase)];
+  }
+  return API_BASES;
+}
+
+async function chooseReachableApi(bases: string[]): Promise<string> {
+  for (const base of bases) {
+    try {
+      await fetch(`${base}/openapi.json`, {
+        method: "GET",
+        cache: "no-store",
+        signal: AbortSignal.timeout(4000),
+      });
+      selectedApiBase = base;
+      return base;
+    } catch {
+      // Try the next configured API before sending a request that changes data.
+    }
+  }
+  throw new Error("Cannot connect to any configured API. Check the API URLs, server, and CORS settings.");
+}
+
+async function fetchFromApi(path: string, init?: RequestInit, preferredBase?: string): Promise<{ response: Response; base: string }> {
+  const bases = orderedApiBases(preferredBase);
+  if (bases.length === 0) {
+    throw new Error("No usable API URL is configured for this page. Set VITE_API_BASE_URL in the root .env file.");
+  }
+  const method = (init?.method ?? "GET").toUpperCase();
+  const readOnly = method === "GET" || method === "HEAD";
+  const targetBases = !readOnly && !preferredBase && !selectedApiBase && bases.length > 1
+    ? [await chooseReachableApi(bases)]
+    : bases;
+  for (const base of targetBases) {
+    try {
+      const response = await fetch(`${base}${path}`, { ...init, headers: headersFor(init) });
+      selectedApiBase = base;
+      return { response, base };
+    } catch {
+      if (!readOnly) {
+        selectedApiBase = null;
+        throw new Error(`Could not connect to ${base}. The action was not retried to avoid submitting it twice.`);
+      }
+    }
+  }
+  selectedApiBase = null;
+  throw new Error("Cannot connect to any configured API. Check the API URLs, server, and CORS settings.");
+}
+
+async function refreshSession(base: string): Promise<boolean> {
   if (refreshPromise) return refreshPromise;
   const refreshToken = activeSession?.refresh_token;
   if (!refreshToken) return false;
 
   refreshPromise = (async () => {
-    const response = await fetch(`${API_BASE}/auth/refresh`, {
+    const response = await fetch(`${base}/auth/refresh`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ refresh_token: refreshToken }),
@@ -261,10 +348,10 @@ async function refreshSession(): Promise<boolean> {
   }
 }
 
-async function requestResponse(path: string, init?: RequestInit, allowRefresh = true): Promise<Response> {
-  const response = await fetch(`${API_BASE}${path}`, { ...init, headers: headersFor(init) });
-  if (response.status === 401 && allowRefresh && await refreshSession()) {
-    return requestResponse(path, init, false);
+async function requestResponse(path: string, init?: RequestInit, allowRefresh = true, preferredBase?: string): Promise<Response> {
+  const { response, base } = await fetchFromApi(path, init, preferredBase);
+  if (response.status === 401 && allowRefresh && await refreshSession(base)) {
+    return requestResponse(path, init, false, base);
   }
   return response;
 }
@@ -273,7 +360,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await requestResponse(path, init);
   if (!response.ok) {
     const text = await response.text();
-    throw new Error(text || `${response.status} ${response.statusText}`);
+    throw new ApiHttpError(text || `${response.status} ${response.statusText}`, response.status);
   }
   if (response.status === 204) return undefined as T;
   return response.json() as Promise<T>;

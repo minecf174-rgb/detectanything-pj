@@ -36,6 +36,7 @@ import {
   AnnotationBox,
   AnnotationSet,
   api,
+  ApiHttpError,
   ArchiveInspection,
   AutoLabelJob,
   clearAuthSession,
@@ -566,10 +567,14 @@ export function App() {
     void api.me().then(() => {
       setAuthChecked(true);
       void refreshAll();
-    }).catch(() => {
-      clearAuthSession();
+    }).catch((error) => {
       setAuthChecked(true);
-      setSession(null);
+      if (error instanceof ApiHttpError && error.status === 401) {
+        clearAuthSession();
+        setSession(null);
+      } else {
+        setStatus(errorMessage(error));
+      }
     });
   }, [refreshAll, session?.access_token]);
 
