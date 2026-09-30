@@ -289,11 +289,21 @@ alembic upgrade head
 
 ```bash
 # Terminal 1 Frontend
-cloudflared tunnel --url http://127.0.0.1:5173
+cloudflared tunnel --url http://127.0.0.1:5173 2>&1 \
+  | awk 'match($0, /https:\/\/[-a-zA-Z0-9]+\.trycloudflare\.com/) && !shown {
+      print substr($0, RSTART, RLENGTH)
+      fflush()
+      shown=1
+    }'
 ```
 
 ```bash
 #Terminal 2 Backend
-cloudflared tunnel --url http://127.0.0.1:8000
+cloudflared tunnel --url http://127.0.0.1:8000 2>&1 \
+  | awk 'match($0, /https:\/\/[-a-zA-Z0-9]+\.trycloudflare\.com/) && !shown {
+      print substr($0, RSTART, RLENGTH)
+      fflush()
+      shown=1
+    }'
 ```
 
