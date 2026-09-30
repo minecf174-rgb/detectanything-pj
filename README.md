@@ -106,7 +106,7 @@ uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
 Terminal 2: Frontend
 
 ```bash
-cd "detect anything/frontend"
+cd "frontend"
 npm run dev
 ```
 
@@ -278,3 +278,18 @@ alembic upgrade head
 ต้องย้าย `cv_platform.sqlite3` และ `storage/` จาก archive เดียวกันเสมอ หากย้ายคนละช่วงเวลา record ในฐานข้อมูลอาจอ้างถึงรูปหรือโมเดลที่ไม่มีอยู่จริง
 
 รายละเอียดกรณีย้ายข้อมูลเดิม: [docs/new-machine-setup.md](docs/new-machine-setup.md)
+
+
+
+### กรณีต้องการเปิด tunnel free cloundflare
+
+```bash
+# Terminal 1 Frontend
+cloudflared tunnel --url http://127.0.0.1:5173
+```
+
+```bash
+#Terminal 2 Backend
+cloudflared tunnel --url http://127.0.0.1:8000
+```
+
