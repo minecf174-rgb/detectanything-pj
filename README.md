@@ -142,4 +142,67 @@ npm run build
 
 `.gitignore` ไม่เก็บ `.env`, `cv_platform.sqlite3`, `storage/projects/` (ภาพและ dataset), `storage/models/` (โมเดลที่เทรนแล้ว), pretrained `*.pt`, `temp/`, `runs/`, `venv/`, `node_modules/` และ build output ดังนั้น **โมเดลที่เทรนบนเครื่องเก่าจะไม่ปรากฏในเว็บบนเครื่องใหม่** เมื่อเริ่มจาก DB เปล่า ต้องเทรนใหม่ หรือย้ายฐานข้อมูลและไฟล์ storage มาด้วยกันจาก snapshot เดียวกัน
 
+## สำรองข้อมูลเพื่อย้ายเครื่อง
+
+ไม่ควร commit ไฟล์ backup เข้า Git repository เพราะมีฐานข้อมูล รูป และโมเดลขนาดใหญ่ รวมถึงข้อมูลบัญชีภายในระบบ ให้เก็บ archive ผ่าน external drive หรือ private cloud storage แยกจาก source code โฟลเดอร์ `backups/` ถูก `.gitignore` ไว้แล้ว
+
+ก่อนสำรองให้หยุด Backend ด้วย `Ctrl+C` เพื่อให้ไฟล์ SQLite และ `storage/` เป็น snapshot ช่วงเวลาเดียวกัน จากนั้นรันที่ root โปรเจกต์:
+
+```bash
+mkdir -p backups
+tar -czf "backups/detect-anything-data-$(date +%Y%m%d-%H%M%S).tar.gz" \
+  cv_platform.sqlite3 \
+  storage/projects \
+  storage/models
+```
+
+ไฟล์ชุดนี้มี:
+
+- `cv_platform.sqlite3`: account, project, class, annotation, dataset version, training run และ model records
+- `storage/projects/`: รูปต้นฉบับของแต่ละโปรเจกต์
+- `storage/models/`: weights ของโมเดลที่เทรนสำเร็จ
+
+ไม่ต้องใส่ pretrained weights เช่น `yolo26n-pose.pt` เพราะดาวน์โหลดใหม่ตามขั้นตอนด้านบนได้ และไม่ต้องใส่ `temp/` สำหรับงานที่เทรนเสร็จแล้ว
+
+หากมีงานสถานะ `INTERRUPTED` ที่ต้องการ Resume บนเครื่องใหม่ ให้เพิ่ม `temp/training` เข้า archive:
+
+```bash
+mkdir -p backups
+tar -czf "backups/detect-anything-data-with-checkpoint-$(date +%Y%m%d-%H%M%S).tar.gz" \
+  cv_platform.sqlite3 \
+  storage/projects \
+  storage/models \
+  temp/training
+```
+
+ตรวจว่า archive อ่านได้ก่อนย้าย:
+
+```bash
+tar -tzf backups/detect-anything-data-*.tar.gz | head
+du -sh backups/*.tar.gz
+```
+
+ถ้าใช้ `.env` ที่ตั้งค่าเอง ให้ย้ายไฟล์นั้นผ่านช่องทางที่ปลอดภัยแยกต่างหาก ห้ามใส่ `.env` หรือ archive ข้อมูลขึ้น Git
+
+### Restore บนเครื่องใหม่
+
+1. Clone โปรเจกต์และติดตั้ง Backend/Frontend ตามขั้นตอนต้น README
+2. นำไฟล์ `.tar.gz` ไปวางใน `backups/` ของโปรเจกต์ใหม่
+3. หยุด Backend ถ้ากำลังทำงาน แล้วแตก archive จาก root โปรเจกต์:
+
+```bash
+tar -xzf backups/<backup-file-name>.tar.gz -C .
+```
+
+4. อัปเดต schema ให้ตรงกับ source code เครื่องใหม่:
+
+```bash
+source venv/bin/activate
+alembic upgrade head
+```
+
+5. ดาวน์โหลด pretrained weights ที่ต้องใช้ แล้วเปิด Backend และ Frontend ตามปกติ
+
+ต้องย้าย `cv_platform.sqlite3` และ `storage/` จาก archive เดียวกันเสมอ หากย้ายคนละช่วงเวลา record ในฐานข้อมูลอาจอ้างถึงรูปหรือโมเดลที่ไม่มีอยู่จริง
+
 รายละเอียดกรณีย้ายข้อมูลเดิม: [docs/new-machine-setup.md](docs/new-machine-setup.md)
