@@ -125,6 +125,15 @@ lsof -nP -iTCP:8000 -sTCP:LISTEN
 lsof -nP -iTCP:5173 -sTCP:LISTEN
 ```
 
+หากต้องการหยุด server เดิมและกลับไปที่ terminal ที่เปิดไว้ไม่ได้ ให้ดูเลข `PID` จากผล `lsof` ในแถวของพอร์ตที่ต้องการ (8000 คือ Backend, 5173 คือ Frontend) แล้วแทน `12345` ในตัวอย่างด้วยเลข PID ที่พบ เพื่อตรวจชื่อ process ก่อนสั่งหยุด:
+
+```bash
+ps -p 12345 -o pid=,command=
+kill -TERM 12345
+```
+
+เช็กพอร์ตเดิมอีกครั้งด้วยคำสั่ง `lsof` ด้านบน ถ้าไม่แสดง process ที่ `LISTEN` แล้วจึงเปิด server ใหม่ หากมีหลาย `PID` ให้ตรวจและหยุดเฉพาะ process ที่ต้องการทีละตัว
+
 Vite ตั้ง `strictPort: true` จึงไม่ย้ายจาก 5173 ไป 5174 เอง
 
 ## เปิดให้ทดสอบผ่าน Cloudflare Tunnel
