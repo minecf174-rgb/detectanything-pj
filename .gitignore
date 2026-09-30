@@ -40,6 +40,8 @@ frontend/dist/
 *.engine
 runs/
 backups/
+cloudflare/config.yml
+cloudflare/*.json
 
 # Uploaded data, trained models, and temporary work files
 storage/projects/**

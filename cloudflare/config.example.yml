@@ -1,0 +1,11 @@
+# Copy to cloudflare/config.yml and replace every placeholder.
+# Never commit the real credentials JSON or config.yml.
+tunnel: <TUNNEL_ID>
+credentials-file: /absolute/path/to/.cloudflared/<TUNNEL_ID>.json
+
+ingress:
+  - hostname: app.example.com
+    service: http://127.0.0.1:5173
+  - hostname: api.example.com
+    service: http://127.0.0.1:8000
+  - service: http_status:404

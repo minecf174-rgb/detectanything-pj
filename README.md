@@ -114,7 +114,7 @@ npm run dev
 
 ครั้งถัดไปใช้แค่สอง terminal ด้านบน ไม่ต้องติดตั้ง dependencies หรือดาวน์โหลด weights ซ้ำ `alembic upgrade head` รันซ้ำได้และควรรันหลังดึงโค้ดที่มี migration ใหม่
 
-Frontend ใช้ backend ที่ `http://127.0.0.1:8000` โดยค่าเริ่มต้น หากเปลี่ยน URL ให้กำหนด `VITE_API_BASE_URL` ฝั่ง frontend และปรับ `CORS_ORIGINS` ฝั่ง backend ให้ตรงกัน
+Frontend ใช้ backend ที่ `http://127.0.0.1:8000` โดยค่าเริ่มต้น Backend และ Frontend อ่านค่าจาก root `.env` ไฟล์เดียวกัน
 
 ### ถ้าพอร์ตถูกใช้อยู่
 
@@ -126,6 +126,69 @@ lsof -nP -iTCP:5173 -sTCP:LISTEN
 ```
 
 Vite ตั้ง `strictPort: true` จึงไม่ย้ายจาก 5173 ไป 5174 เอง
+
+## เปิดให้ทดสอบผ่าน Cloudflare Tunnel
+
+โครงสร้างที่รองรับคือใช้ hostname คงที่สองชื่อ โดยผู้ใช้เปิด Frontend และ Frontend เรียก Backend ผ่าน API:
+
+```text
+https://app.example.com -> http://127.0.0.1:5173
+https://api.example.com -> http://127.0.0.1:8000
+```
+
+ควรใช้ Named Tunnel เพื่อให้ URL ไม่เปลี่ยนทุกครั้ง หากใช้โดเมนอื่นให้แทน `app.example.com` และ `api.example.com` ในทุกขั้นตอนด้านล่าง
+
+### 1. ตั้งค่า Backend และ Frontend
+
+สร้าง `.env` จากตัวอย่าง:
+
+```bash
+cp .env.example .env
+python -c 'import secrets; print(secrets.token_urlsafe(48))'
+```
+
+แก้ค่าต่อไปนี้ใน root `.env` โดยนำค่าสุ่มจากคำสั่งด้านบนมาใช้เป็น secret:
+
+```dotenv
+CORS_ORIGINS=https://app.example.com,http://127.0.0.1:5173,http://localhost:5173
+AUTH_JWT_SECRET=<GENERATED_SECRET>
+VITE_API_BASE_URL=https://api.example.com
+VITE_ALLOWED_HOSTS=app.example.com
+```
+
+Backend ใช้ `CORS_ORIGINS` และ `AUTH_JWT_SECRET` ส่วน Vite ใช้เฉพาะค่าที่ขึ้นต้น `VITE_` จากไฟล์เดียวกัน `VITE_ALLOWED_HOSTS` ใช้เฉพาะ hostname ไม่ใส่ `https://` ส่วน `VITE_API_BASE_URL` ต้องใส่ protocol
+
+localhost ยังคงอยู่ใน `CORS_ORIGINS` จึงใช้เว็บแบบ local ได้ด้วย เมื่อต้องการให้ Frontend กลับไปเรียก Backend local ให้เปลี่ยน `VITE_API_BASE_URL` เป็น `http://127.0.0.1:8000` หลังแก้ `.env` ต้อง restart ทั้ง Backend และ Frontend ห้าม commit `.env`
+
+### 2. ตั้งค่า Tunnel
+
+ติดตั้งและ login `cloudflared` ตามวิธีของ Cloudflare จากนั้นสร้าง Named Tunnel และ DNS routes สำหรับสอง hostname คัดลอกไฟล์ตัวอย่าง:
+
+```bash
+cp cloudflare/config.example.yml cloudflare/config.yml
+```
+
+ใส่ Tunnel ID, path ของ credentials และ hostname จริงใน `cloudflare/config.yml` แล้วรัน:
+
+```bash
+cloudflared tunnel --config cloudflare/config.yml run
+```
+
+`cloudflare/config.yml` และ credentials JSON ถูก Git ignore ห้าม commit ไฟล์จริง หากตั้ง Public Hostnames ผ่าน Cloudflare Dashboard อยู่แล้ว สามารถใช้คำสั่ง run/token ที่ Dashboard สร้างให้โดยไม่ต้องสร้าง `config.yml`
+
+### 3. รันทั้งหมด
+
+ต้องมีสาม process ทำงานพร้อมกัน:
+
+```text
+Backend    127.0.0.1:8000
+Frontend   127.0.0.1:5173
+cloudflared tunnel
+```
+
+Cloudflare เชื่อมเข้าบริการ local จากเครื่องเดียวกัน จึงไม่ต้องเปลี่ยน Uvicorn หรือ Vite ให้ bind `0.0.0.0` และไม่ต้องเปิดพอร์ตฐานข้อมูลออกอินเทอร์เน็ต หากเครื่องปิดหรือ sleep เว็บไซต์จะเข้าไม่ได้
+
+สำหรับการทดสอบด้วย production build ให้รัน `npm run build` และ `npm run preview` ซึ่งใช้ port `4173` จากนั้นเปลี่ยน service ของ Frontend ใน Tunnel เป็น `http://127.0.0.1:4173`
 
 ## ตรวจว่าติดตั้งสำเร็จ
 

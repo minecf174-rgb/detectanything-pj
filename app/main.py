@@ -27,7 +27,11 @@ async def lifespan(_app: FastAPI):
 def create_app() -> FastAPI:
     app = FastAPI(title="CV Training Platform", lifespan=lifespan)
     settings = get_settings()
-    origins = [origin.strip() for origin in settings.cors_origins.split(",") if origin.strip()]
+    origins = [
+        origin.strip().rstrip("/")
+        for origin in settings.cors_origins.split(",")
+        if origin.strip()
+    ]
     allow_all_origins = "*" in origins
 
     app.add_middleware(

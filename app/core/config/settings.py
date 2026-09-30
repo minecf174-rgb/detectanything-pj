@@ -13,7 +13,11 @@ class Settings(BaseSettings):
     auth_refresh_token_days: int = 14
     auth_allow_legacy_account_claim: bool = False
 
-    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        env_file_encoding="utf-8",
+        extra="ignore",
+    )
 
 
 @lru_cache
