@@ -2191,6 +2191,7 @@ export function App() {
           images={images}
           selectedImageId={selectedImageId}
           classColors={classColorById}
+          classNames={classNameById}
           pendingImageIds={pendingReviewImageIds}
           annotationStatuses={imageAnnotationStatuses}
           busy={busy}
@@ -2266,6 +2267,7 @@ function ImageSelectorModal({
   images,
   selectedImageId,
   classColors,
+  classNames,
   pendingImageIds,
   annotationStatuses,
   busy,
@@ -2278,6 +2280,7 @@ function ImageSelectorModal({
   images: ImageItem[];
   selectedImageId: number | null;
   classColors: Record<number, string>;
+  classNames: Record<number, string>;
   pendingImageIds: Set<number>;
   annotationStatuses: ImageAnnotationStatus[];
   busy: boolean;
@@ -2309,8 +2312,14 @@ function ImageSelectorModal({
   );
   const searched = useMemo(() => {
     const query = search.trim().toLowerCase();
-    return query ? images.filter((image, index) => `${index + 1} ${image.original_filename ?? ""}`.toLowerCase().includes(query)) : images;
+    if (!query) return images;
+    if (/^#?\d+$/.test(query)) {
+      const position = Number(query.replace(/^#/, ""));
+      return position >= 1 && position <= images.length ? [images[position - 1]] : [];
+    }
+    return images.filter((image) => (image.original_filename ?? "").toLowerCase().includes(query));
   }, [images, search]);
+  const requestedImageNumber = /^#?\d+$/.test(search.trim()) ? Number(search.trim().replace(/^#/, "")) : null;
   const filtered = useMemo(() => searched.filter((image) => {
     const status = statusByImage.get(image.image_id);
     if (filter === "labeled") return !!status && status.box_count > 0 && status.status !== "REJECTED";
@@ -2413,6 +2422,7 @@ function ImageSelectorModal({
 
   const updateSearch = (value: string) => {
     setSearch(value);
+    if (/^#?\d+$/.test(value.trim())) setFilter("all");
     setRangeStart(0);
     setRangeEnd(Math.min(batchSize, images.length));
   };
@@ -2457,7 +2467,10 @@ function ImageSelectorModal({
     <section className="image-selector-modal" role="dialog" aria-modal="true" aria-label="Select image">
       <header className="image-manager-header"><div><h3>Select image</h3><p>Labels and model suggestions are shown on each preview.</p></div><button className="icon-button" onClick={onClose} title="Close"><X size={18} /></button></header>
       <div className="image-selector-toolbar">
-        <input value={search} onChange={(event) => updateSearch(event.target.value)} placeholder="Search filename or image number" />
+        <div className="image-selector-search-field">
+          <input value={search} onChange={(event) => updateSearch(event.target.value)} placeholder="Image # (e.g. 29) or filename" aria-label="Search by exact image number or filename" />
+          <small>Type 29 for image #29 only; words search filenames.</small>
+        </div>
         <div className="image-selector-toolbar-meta">
           <span>{filtered.length} images</span>
           {pendingImageIds.size > 0 && (
@@ -2475,6 +2488,15 @@ function ImageSelectorModal({
         ] as const).map(([value, label]) => <button className={filter === value ? "active" : ""} onClick={() => updateFilter(value)} type="button" key={value}><span>{label}</span><strong>{filterCounts[value]}</strong></button>)}
       </div>
       <div className="image-selector-grid" ref={gridRef}>
+        {filtered.length === 0 && <div className="image-selector-empty">
+          {requestedImageNumber != null
+            ? requestedImageNumber >= 1 && requestedImageNumber <= images.length
+              ? `Image #${requestedImageNumber} is not in this filter. Choose All to find it.`
+              : `Image #${requestedImageNumber} not found. Enter a number from 1 to ${images.length}.`
+            : search.trim()
+              ? "No filenames match. Try a different name or enter an image number."
+              : "No images in this filter."}
+        </div>}
         {rangeStart > 0 && <div className="image-lazy-sentinel" ref={topSentinelRef}>Loading earlier images...</div>}
         {visible.map((image) => {
           const globalIndex = images.findIndex((item) => item.image_id === image.image_id) + 1;
@@ -2491,6 +2513,7 @@ function ImageSelectorModal({
                 : `Pending · ${annotationStatus?.box_count ?? 0}`;
           const statusClass = displayStatus === "REJECTED" ? "rejected" : hasLabels ? displayStatus.toLowerCase() : "needs-drawing";
           const frame = getImageFrameForDimensions(image.width ?? 1, image.height ?? 1, 240 / 150);
+          const tagNames = [...new Set(preview?.annotations.map((box) => classNames[box.class_id] ?? `Class ${box.class_id}`) ?? [])];
           const selected = image.image_id === selectedImageId;
           const bulkSelected = selectedPendingImageIds.has(image.image_id);
           const selectable = displayStatus === "PENDING";
@@ -2506,8 +2529,8 @@ function ImageSelectorModal({
             {!selectingMultiple && selected && <span className="image-card-selected"><Check size={14} /> Current image</span>}
             {selectingMultiple && bulkSelected && <span className="image-card-selected"><Check size={14} /> Selected</span>}
             <span className={`image-card-label-state ${hasLabels ? "labeled" : "drawing"}`}>{hasLabels ? "Labeled" : "Needs drawing"}</span>
-            <ImageSelectorPreview image={image} alt={image.original_filename ?? `Image ${globalIndex}`} preview={preview} frame={frame} classColors={classColors} />
-            <div><strong>#{globalIndex} {image.original_filename ?? `image-${globalIndex}`}</strong><span className={statusClass}>{pendingImageIds.has(image.image_id) && hasLabels ? `Pending · ${annotationStatus?.box_count ?? 0}` : statusText}</span></div>
+            <ImageSelectorPreview image={image} alt={image.original_filename ?? `Image ${globalIndex}`} preview={preview} frame={frame} classColors={classColors} classNames={classNames} showTags />
+            <div><strong>#{globalIndex} {image.original_filename ?? `image-${globalIndex}`}</strong><span className={statusClass}>{pendingImageIds.has(image.image_id) && hasLabels ? `Pending · ${annotationStatus?.box_count ?? 0}` : statusText}</span>{tagNames.length > 0 && <small className="image-selector-card-tags" title={tagNames.join(", ")}>Tags: {tagNames.join(", ")}</small>}</div>
           </button>;
         })}
         <div className="image-lazy-sentinel" ref={bottomSentinelRef}>{rangeEnd < filtered.length ? "Loading more images..." : "All images loaded"}</div>
@@ -3156,12 +3179,16 @@ function ImageSelectorPreview({
   preview,
   frame,
   classColors,
+  classNames,
+  showTags = false,
 }: {
   image: ImageItem;
   alt: string;
   preview: AnnotationSet | null | undefined;
   frame: ImageFrame;
   classColors: Record<number, string>;
+  classNames?: Record<number, string>;
+  showTags?: boolean;
 }) {
   const imageUrl = useProtectedImageUrl(image);
   const [imageReady, setImageReady] = useState(false);
@@ -3174,12 +3201,12 @@ function ImageSelectorPreview({
       ? "rejected"
       : "approved";
 
-  return <div className="image-selector-preview">
+  return <div className={showTags ? "image-selector-preview show-tags" : "image-selector-preview"}>
     {imageUrl
       ? <img className={imageReady ? undefined : "image-hidden"} src={imageUrl} alt={alt} loading="lazy" onLoad={() => setImageReady(true)} />
       : <span className="protected-image-placeholder">Loading image...</span>}
     {imageReady && preview?.annotations.map((box, index) => <span key={index}>
-      <Box box={box} frame={frame} tone={tone} color={classColors[box.class_id]} />
+      <Box box={box} frame={frame} tone={tone} color={classColors[box.class_id]} label={showTags ? classNames?.[box.class_id] : undefined} />
       <PoseKeypoints keypoints={(box.keypoints ?? []).map((point) => ({ x: point.x, y: point.y, visibility: point.visibility }))} frame={frame} tone={tone} />
     </span>)}
   </div>;

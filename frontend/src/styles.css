@@ -3554,6 +3554,8 @@ h2 {
 
 .image-selector-toolbar { border-bottom: 1px solid #e5eaf1; }
 .image-selector-toolbar input { max-width: 430px; width: 100%; }
+.image-selector-search-field { display: grid; gap: 4px; max-width: 430px; width: 100%; }
+.image-selector-search-field small { color: #718096; font-size: 11px; }
 .image-selector-toolbar span,
 .image-selector-footer span { color: #718096; font-size: 11px; font-weight: 700; }
 
@@ -3630,6 +3632,14 @@ h2 {
   min-height: 28px;
 }
 
+.image-selector-empty {
+  color: #64748b;
+  font-size: 13px;
+  grid-column: 1 / -1;
+  padding: 24px 12px;
+  text-align: center;
+}
+
 .image-selector-card {
   display: grid;
   grid-template-rows: 150px 48px;
@@ -3665,6 +3675,12 @@ h2 {
 .image-selector-preview > img.image-hidden { opacity: 0; }
 .image-selector-preview > .protected-image-placeholder { align-items: center; display: flex; height: 100%; justify-content: center; }
 .image-selector-preview .box span { display: none; }
+.image-selector-preview.show-tags .box .box-tag {
+  display: inline-block;
+  font-size: 10px;
+  max-width: 100px;
+  padding: 2px 3px;
+}
 .image-selector-preview .pose-keypoint { font-size: 0; height: 5px; width: 5px; }
 .image-card-selected,
 .image-card-label-state {
@@ -3697,6 +3713,9 @@ h2 {
 .image-card-label-state.drawing { background: #e06b00; }
 .image-selector-card > div:last-child { align-items: center; display: grid; gap: 4px; grid-template-columns: minmax(0, 1fr) auto; padding: 7px 9px; }
 .image-selector-card strong { font-size: 10px; overflow: hidden; text-align: left; text-overflow: ellipsis; white-space: nowrap; }
+.image-selector-card-tags { color: #52627a; font-size: 10px; grid-column: 1 / -1; overflow: hidden; text-align: left; text-overflow: ellipsis; white-space: nowrap; }
+.image-selector-card.active .image-selector-card-tags,
+.image-selector-card.bulk-selected .image-selector-card-tags { color: #e8f1ff; }
 .image-selector-card > div:last-child span { border-radius: 999px; font-size: 9px; font-weight: 800; padding: 3px 6px; }
 .image-selector-card > div:last-child > span.pending { background: #fff1df; color: #9a5b08; }
 .image-selector-card > div:last-child > span.approved { background: #e8f7ee; color: #167447; }
