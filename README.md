@@ -114,7 +114,7 @@ npm run dev
 
 ครั้งถัดไปใช้แค่สอง terminal ด้านบน ไม่ต้องติดตั้ง dependencies หรือดาวน์โหลด weights ซ้ำ `alembic upgrade head` รันซ้ำได้และควรรันหลังดึงโค้ดที่มี migration ใหม่
 
-Frontend ใช้ backend ที่ `http://127.0.0.1:8000` โดยค่าเริ่มต้น Backend และ Frontend อ่านค่าจาก root `.env` ไฟล์เดียวกัน
+Frontend เรียก API ผ่าน path `/api` ที่ origin เดียวกันโดยค่าเริ่มต้น แล้ว Vite proxy ส่งต่อไปยัง backend ที่ `http://127.0.0.1:8000` วิธีนี้ทำให้ทั้งการใช้งาน local และการเปิด tunnel เฉพาะ Frontend ใช้ค่า API เดียวกันได้ Backend และ Frontend อ่านค่าจาก root `.env` ไฟล์เดียวกัน
 
 ### ถ้าพอร์ตถูกใช้อยู่
 
@@ -135,6 +135,43 @@ kill -TERM 12345
 เช็กพอร์ตเดิมอีกครั้งด้วยคำสั่ง `lsof` ด้านบน ถ้าไม่แสดง process ที่ `LISTEN` แล้วจึงเปิด server ใหม่ หากมีหลาย `PID` ให้ตรวจและหยุดเฉพาะ process ที่ต้องการทีละตัว
 
 Vite ตั้ง `strictPort: true` จึงไม่ย้ายจาก 5173 ไป 5174 เอง
+
+## เปิดให้ทดสอบผ่าน ngrok URL เดียว
+
+โครงสร้างนี้เปิด public tunnel แค่ Frontend ส่วน Backend ยังฟังเฉพาะในเครื่อง:
+
+```text
+Browser -> https://example.ngrok-free.app/api/... -> ngrok -> Vite 127.0.0.1:5173
+                                                               -> Backend 127.0.0.1:8000
+```
+
+สร้าง root `.env` จากตัวอย่างและสร้าง secret แบบสุ่มก่อนเปิดให้เครื่องอื่นเข้าใช้:
+
+```bash
+cp .env.example .env
+python -c 'import secrets; print(secrets.token_urlsafe(48))'
+```
+
+นำค่าที่สุ่มได้ไปใส่ `AUTH_JWT_SECRET` หากยังไม่รู้ hostname ให้รัน `ngrok http 5173` เพื่อดู Forwarding URL ก่อน แล้วตั้งค่า hostname จริงโดยใส่เฉพาะ hostname ไม่ใส่ `https://` หรือ path:
+
+```dotenv
+AUTH_JWT_SECRET=<GENERATED_SECRET>
+VITE_API_BASE_URL=/api
+API_PROXY_TARGET=http://127.0.0.1:8000
+VITE_ALLOWED_HOSTS=example.ngrok-free.app
+```
+
+เปิด Backend และ Frontend ตามหัวข้อรันระบบ แล้วให้ ngrok ทำงานเป็น process ที่สาม:
+
+```bash
+ngrok http 5173
+```
+
+ผู้ใช้เปิด URL HTTPS ของ ngrok ได้โดยไม่ต้องเข้าถึงพอร์ต 8000 โดยตรง Request เช่น `/api/auth/login` จะถูก Vite ตัด prefix `/api` แล้วส่งเป็น `/auth/login` ไปยัง Backend หลังสร้างหรือแก้ `.env` ต้อง restart Backend และ Frontend หาก hostname ของ ngrok เปลี่ยน ให้แก้ `VITE_ALLOWED_HOSTS` และ restart Frontend อีกครั้ง
+
+โหมดนี้ไม่ต้องเพิ่ม public ngrok origin ใน `CORS_ORIGINS` เพราะ Browser เรียกหน้าเว็บและ `/api` จาก origin เดียวกัน ไม่ต้องเปลี่ยน Uvicorn เป็น `0.0.0.0` และไม่ควรตั้ง `VITE_ALLOWED_HOSTS=true`
+
+ลิงก์ tunnel ไม่ใช่กลไกควบคุมสิทธิ์ ระบบเปิดให้สมัครบัญชีได้และงาน upload, training หรือ prediction ใช้พื้นที่และทรัพยากรเครื่อง จึงควรแชร์เฉพาะผู้ทดสอบที่ไว้ใจหรือเพิ่ม access protection ที่ tunnel
 
 ## เปิดให้ทดสอบผ่าน Cloudflare Tunnel
 
@@ -165,7 +202,7 @@ VITE_API_BASE_URL=http://127.0.0.1:8000,https://api.example.com
 VITE_ALLOWED_HOSTS=app.example.com
 ```
 
-Backend ใช้ `CORS_ORIGINS` และ `AUTH_JWT_SECRET` ส่วน Vite ใช้เฉพาะค่าที่ขึ้นต้น `VITE_` จากไฟล์เดียวกัน `VITE_ALLOWED_HOSTS` ใช้เฉพาะ hostname ไม่ใส่ `https://` ส่วน `VITE_API_BASE_URL` ใส่ API URL เต็มพร้อม `http://` หรือ `https://` คั่นหลาย URL ด้วยเครื่องหมายจุลภาค (ค่า URL เดียวแบบเดิมก็ใช้ได้)
+Backend ใช้ `CORS_ORIGINS` และ `AUTH_JWT_SECRET` ส่วน Vite อ่าน `VITE_` settings และ `API_PROXY_TARGET` จากไฟล์เดียวกัน `VITE_ALLOWED_HOSTS` ใช้เฉพาะ hostname ไม่ใส่ `https://` ส่วน `VITE_API_BASE_URL` รองรับทั้ง same-origin path `/api` และ API URL เต็มพร้อม `http://` หรือ `https://`; คั่นหลาย URL ด้วยเครื่องหมายจุลภาคได้
 
 เมื่อเปิด Frontend ผ่าน `127.0.0.1` หรือ `localhost` ระบบจะเลือก Backend local ที่ระบุไว้ก่อน แล้วลอง public API หาก local เชื่อมต่อไม่ได้ เมื่อเปิดผ่าน hostname สาธารณะ ระบบจะใช้ HTTPS public API เท่านั้น เพราะ `127.0.0.1` ใน browser ของผู้ใช้อื่นหมายถึงเครื่องของผู้ใช้นั้นเอง หากเชื่อมต่อ API ระหว่างอ่านข้อมูลไม่ได้ จะลอง URL ถัดไป; ก่อนส่งคำสั่งเขียนข้อมูลครั้งแรก ระบบจะตรวจว่าปลายทางใช้งานได้ และไม่ส่งคำสั่งเดิมซ้ำอัตโนมัติหากการเชื่อมต่อขาดกลางทาง เพื่อเลี่ยงข้อมูลซ้ำ การสลับ URL ไม่แก้ HTTP error เช่น 401/500 หรือ CORS ที่ตั้งค่าไม่ถูกต้อง
 
@@ -306,4 +343,3 @@ cloudflared tunnel --url http://127.0.0.1:8000 2>&1 \
       shown=1
     }'
 ```
-

@@ -7,6 +7,14 @@ export default defineConfig(({ mode }) => {
     .split(",")
     .map((host) => host.trim())
     .filter(Boolean);
+  const apiProxyTarget = env.API_PROXY_TARGET?.trim() || "http://127.0.0.1:8000";
+  const apiProxy = {
+    "/api": {
+      target: apiProxyTarget,
+      changeOrigin: true,
+      rewrite: (path: string) => path.replace(/^\/api/, ""),
+    },
+  };
 
   return {
     envDir: "..",
@@ -16,12 +24,14 @@ export default defineConfig(({ mode }) => {
       port: 5173,
       strictPort: true,
       allowedHosts,
+      proxy: apiProxy,
     },
     preview: {
       host: "127.0.0.1",
       port: 4173,
       strictPort: true,
       allowedHosts,
+      proxy: apiProxy,
     },
   };
 });

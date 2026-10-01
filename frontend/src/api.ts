@@ -1,4 +1,4 @@
-const configuredApiBases = (import.meta.env.VITE_API_BASE_URL as string | undefined)?.trim() || "http://127.0.0.1:8000";
+const configuredApiBases = (import.meta.env.VITE_API_BASE_URL as string | undefined)?.trim() || "/api";
 
 function isLoopback(hostname: string) {
   return hostname === "localhost" || hostname === "127.0.0.1" || hostname === "[::1]";
@@ -9,7 +9,7 @@ function apiBaseUrls(): string[] {
   const urls = configuredApiBases.split(",").map((entry: string) => entry.trim()).filter(Boolean);
   const parsed = urls.map((entry: string) => {
     try {
-      const url = new URL(entry);
+      const url = new URL(entry, window.location.origin);
       if (!["http:", "https:"].includes(url.protocol) || url.username || url.password || url.search || url.hash) {
         return null;
       }
