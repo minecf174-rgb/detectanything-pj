@@ -304,6 +304,8 @@ export function App() {
   const [trainingSetupOpen, setTrainingSetupOpen] = useState(false);
   const [trainingSettings, setTrainingSettings] = useState<YoloTrainingSettings>(defaultTrainingSettings);
   const [selectedAutoLabelModelId, setSelectedAutoLabelModelId] = useState<number | "pose-pretrained" | null>(null);
+  const [autoLabelSettingsOpen, setAutoLabelSettingsOpen] = useState(false);
+  const [autoLabelConfidenceInput, setAutoLabelConfidenceInput] = useState("0.25");
   const [selectedTestModelId, setSelectedTestModelId] = useState<number | "pose-pretrained" | null>(null);
   const [testImages, setTestImages] = useState<TestImage[]>([]);
   const [testPredictions, setTestPredictions] = useState<(ModelPrediction | null)[]>([]);
@@ -317,6 +319,9 @@ export function App() {
   const [imageManagerSearch, setImageManagerSearch] = useState("");
   const [status, setStatus] = useState("Ready");
   const [busy, setBusy] = useState(false);
+  const [annotationSaveState, setAnnotationSaveState] = useState<"idle" | "pending" | "saving" | "saved" | "error">("idle");
+  const [drawingBox, setDrawingBox] = useState(false);
+  const annotationSavePromise = useRef<Promise<boolean> | null>(null);
   const projectRequestId = useRef(0);
   const projectActionsRef = useRef<HTMLDivElement | null>(null);
 
@@ -335,6 +340,10 @@ export function App() {
   const editingManualLabels = activeReviewSet == null && manualEditSet != null;
   const classColorById = useMemo(
     () => Object.fromEntries(classes.map((labelClass) => [labelClass.class_id, labelClass.color])),
+    [classes],
+  );
+  const classNameById = useMemo(
+    () => Object.fromEntries(classes.map((labelClass) => [labelClass.class_id, labelClass.name])),
     [classes],
   );
   const pendingImageAnnotationStatuses = useMemo(
@@ -391,13 +400,20 @@ export function App() {
     ? images.findIndex((image) => image.image_id === selectedImageId) + 1
     : 0;
 
+  const selectAnnotationImage = async (imageId: number) => {
+    if (imageId === selectedImageId) return true;
+    if (!(await saveManualAnnotation())) return false;
+    setSelectedImageId(imageId);
+    return true;
+  };
+
   const navigateSelectedImage = (direction: -1 | 1) => {
     if (images.length === 0) return;
     const currentIndex = selectedImageId == null
       ? (direction === 1 ? -1 : images.length)
       : images.findIndex((image) => image.image_id === selectedImageId);
     const nextImage = images[currentIndex + direction];
-    if (nextImage) setSelectedImageId(nextImage.image_id);
+    if (nextImage) void selectAnnotationImage(nextImage.image_id);
   };
 
   const copyPreviousLabels = async () => {
@@ -580,6 +596,8 @@ export function App() {
 
   useEffect(() => {
     setDraftBoxes([]);
+    setAnnotationSaveState("idle");
+    setDrawingBox(false);
     setReviewSetId(null);
     setManualEditSetId(null);
     setReviewBoxes([]);
@@ -694,14 +712,14 @@ export function App() {
       if ((event.key === "Backspace" || event.key === "Delete") && editableSet && selectedReviewBoxIndex != null) {
         event.preventDefault();
         deleteSelectedReviewBox();
-      } else if ((event.key === "Backspace" || event.key === "Delete") && draftBoxes.length > 0) {
+      } else if ((event.key === "Backspace" || event.key === "Delete") && draftBoxes.length > 0 && annotationSaveState !== "saving") {
         event.preventDefault();
         undoDraftBox();
       }
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [deleteSelectedReviewBox, draftBoxes.length, editableSet, selectedReviewBoxIndex, undoDraftBox]);
+  }, [annotationSaveState, deleteSelectedReviewBox, draftBoxes.length, editableSet, selectedReviewBoxIndex, undoDraftBox]);
 
   useEffect(() => {
     if (!autoLabelResults) return;
@@ -730,6 +748,7 @@ export function App() {
   };
 
   const activateProject = async (projectId: number) => {
+    if (!(await saveManualAnnotation())) return;
     clearProjectState();
     setProjectActionsOpen(false);
     setSelectedProjectId(projectId);
@@ -761,7 +780,7 @@ export function App() {
       for (const file of files) {
         lastImage = await api.uploadImage(selectedProjectId, file);
       }
-      if (lastImage) setSelectedImageId(lastImage.image_id);
+      if (lastImage) await selectAnnotationImage(lastImage.image_id);
     });
   };
 
@@ -880,10 +899,6 @@ export function App() {
     setDraftBoxes((current) => current.filter((_, itemIndex) => itemIndex !== index));
   };
 
-  const updateDraftBox = (index: number, box: DraftBox) => {
-    setDraftBoxes((current) => current.map((item, itemIndex) => itemIndex === index ? box : item));
-  };
-
   const startPoseCollection = () => {
     if (!selectedImageId || selectedClassId == null || editableSet) return;
     setPosePoints([]);
@@ -981,18 +996,112 @@ export function App() {
     }, { refresh: false });
   };
 
-  const saveManualAnnotation = () => {
-    if (!selectedImageId || draftBoxes.length === 0) return;
+  const saveManualAnnotation = async (): Promise<boolean> => {
+    if (annotationSavePromise.current) return annotationSavePromise.current;
+    if (draftBoxes.length === 0) return true;
+    if (!selectedImageId || annotationImageId !== selectedImageId) {
+      setAnnotationSaveState("error");
+      setStatus("Cannot save labels until this image's annotations load");
+      return false;
+    }
+    const imageId = selectedImageId;
+    const boxesToSave = draftBoxes;
     const pendingIds = pendingSuggestions.map((set) => set.annotation_set_id);
-    void runAction("Save annotation", async () => {
-      await api.createAnnotationSet(selectedImageId, {
-        annotations: draftBoxes.map((box) => ({ ...box, confidence: null })),
-      });
-      // A human label replaces the pending model suggestion for this image.
-      if (pendingIds.length > 0) await api.rejectAnnotationsBulk(pendingIds);
-      setDraftBoxes([]);
-    });
+    const operation = (async () => {
+      setAnnotationSaveState("saving");
+      try {
+        const newBoxes = boxesToSave.map((box) => ({ ...box, confidence: null }));
+        // Each revision is a complete snapshot, not a patch to the previous labels.
+        const saved = latestApproved
+          ? await api.editAnnotation(latestApproved.annotation_set_id, {
+            annotations: [
+              ...latestApproved.annotations.map((box) => ({ ...toReviewBox(box), confidence: null })),
+              ...newBoxes,
+            ],
+          })
+          : await api.createAnnotationSet(imageId, { annotations: newBoxes });
+        let saveMessage = "Labels saved";
+        // A human label replaces pending model suggestions, but failure to dismiss one must not duplicate saved boxes.
+        if (pendingIds.length > 0) {
+          try {
+            await api.rejectAnnotationsBulk(pendingIds);
+          } catch (error) {
+            saveMessage = `Labels saved, but pending suggestions remain: ${errorMessage(error)}`;
+          }
+        }
+        setAnnotations((current) => [...current.map((set) =>
+          pendingIds.includes(set.annotation_set_id) && saveMessage === "Labels saved"
+            ? { ...set, status: "REJECTED" }
+            : set,
+        ), saved]);
+        setDraftBoxes((current) => current.slice(boxesToSave.length));
+        setAnnotationSaveState("saved");
+        setStatus(saveMessage);
+        setImageAnnotationStatuses((current) => [
+          ...current.filter((item) => item.image_id !== imageId),
+          {
+            image_id: imageId,
+            annotation_set_id: saved.annotation_set_id,
+            source_type: latestApproved ? "HUMAN_CORRECTED" : "HUMAN",
+            status: "APPROVED",
+            box_count: saved.annotations.length,
+          },
+        ]);
+        return true;
+      } catch (error) {
+        setAnnotationSaveState("error");
+        setStatus(`Labels not saved: ${errorMessage(error)}`);
+        return false;
+      } finally {
+        annotationSavePromise.current = null;
+      }
+    })();
+    annotationSavePromise.current = operation;
+    return operation;
   };
+
+  useEffect(() => {
+    if (poseProject || editableSet || drawingBox || annotationSaveState !== "pending" || draftBoxes.length === 0) return;
+    const timer = window.setTimeout(() => { void saveManualAnnotation(); }, 900);
+    return () => window.clearTimeout(timer);
+  }, [annotationSaveState, draftBoxes, drawingBox, editableSet, poseProject, selectedImageId]);
+
+  useEffect(() => {
+    if (draftBoxes.length === 0 && annotationSaveState !== "saving") return;
+    const warnBeforeLeaving = (event: BeforeUnloadEvent) => {
+      event.preventDefault();
+      event.returnValue = "";
+    };
+    window.addEventListener("beforeunload", warnBeforeLeaving);
+    return () => window.removeEventListener("beforeunload", warnBeforeLeaving);
+  }, [annotationSaveState, draftBoxes.length]);
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      const target = event.target as HTMLElement | null;
+      if (activeView !== "workspace" || workspaceSection !== "annotate" || imageSelectorOpen || autoLabelResults ||
+          target?.isContentEditable || ["INPUT", "SELECT", "TEXTAREA"].includes(target?.tagName ?? "")) return;
+      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "s") {
+        event.preventDefault();
+        void saveManualAnnotation();
+        return;
+      }
+      if (event.metaKey || event.ctrlKey || event.altKey || busy || editableSet || poseProject) return;
+      if (/^[1-9]$/.test(event.key)) {
+        const labelClass = classes[Number(event.key) - 1];
+        if (labelClass) {
+          event.preventDefault();
+          setSelectedClassId(labelClass.class_id);
+        }
+      } else if (event.key === "ArrowLeft" || event.key === "ArrowRight") {
+        event.preventDefault();
+        navigateSelectedImage(event.key === "ArrowLeft" ? -1 : 1);
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [activeView, autoLabelResults, busy, classes, editableSet, imageSelectorOpen, poseProject, workspaceSection,
+    selectedImageId, images, draftBoxes, annotationImageId, latestApproved, pendingSuggestions]);
 
   const createAndBuildDataset = (imageIds: number[]) => {
     if (!selectedProjectId) return;
@@ -1282,18 +1391,20 @@ export function App() {
     setAutoLabelResults(resultItems.filter((item): item is AutoLabelResult => item != null));
   };
 
-  const autoLabel = () => {
+  const autoLabel = (confidenceThreshold: number) => {
     const selectedModel = typeof selectedAutoLabelModelId === "number"
       ? models.find((model) => model.model_id === selectedAutoLabelModelId)
       : null;
-    if (!selectedProjectId || !selectedAutoLabelModelId || images.length === 0) return;
+    if (!selectedProjectId || !selectedAutoLabelModelId || images.length === 0 ||
+        !Number.isFinite(confidenceThreshold) || confidenceThreshold < 0.01 || confidenceThreshold > 1) return;
+    setAutoLabelSettingsOpen(false);
     void runAction("Auto label", async () => {
       const job = await api.createAutoLabelJob({
         project_id: selectedProjectId,
         model_id: selectedModel?.model_id ?? null,
         base_model: selectedAutoLabelModelId === "pose-pretrained" ? "yolo26n-pose.pt" : null,
         image_ids: images.map((image) => image.image_id),
-        confidence_threshold: 0.25,
+        confidence_threshold: confidenceThreshold,
         max_predictions_per_image: 3,
         only_unlabeled: true,
       });
@@ -1352,10 +1463,11 @@ export function App() {
   };
 
   const openAutoLabelResult = (result: AutoLabelResult) => {
-    setAutoLabelResults(null);
-    setSelectedImageId(result.image.image_id);
-    if (!result.annotationSet) return;
-    setReviewToOpen(result.annotationSet);
+    void selectAnnotationImage(result.image.image_id).then((selected) => {
+      if (!selected) return;
+      setAutoLabelResults(null);
+      if (result.annotationSet) setReviewToOpen(result.annotationSet);
+    });
   };
 
   const rejectAllAutoLabelResults = () => {
@@ -1486,7 +1598,8 @@ export function App() {
     });
   };
 
-  const logout = () => {
+  const logout = async () => {
+    if (!(await saveManualAnnotation())) return;
     const refreshToken = session?.refresh_token;
     clearAuthSession();
     setSession(null);
@@ -1626,7 +1739,7 @@ export function App() {
                   onDragOver={(event) => event.preventDefault()}
                   onDrop={(event) => { event.preventDefault(); importData(event.dataTransfer.files); }}
                 >
-                  {images.slice(0, 8).map((image) => <button className="source-image-card" key={image.image_id} onClick={() => { setSelectedImageId(image.image_id); setWorkspaceSection("annotate"); }} type="button"><ProtectedImage image={image} alt={image.original_filename ?? `Image ${image.image_id}`} /><span>{image.original_filename ?? `Image ${image.image_id}`}</span></button>)}
+                  {images.slice(0, 8).map((image) => <button className="source-image-card" key={image.image_id} onClick={() => { void selectAnnotationImage(image.image_id).then((selected) => { if (selected) setWorkspaceSection("annotate"); }); }} type="button"><ProtectedImage image={image} alt={image.original_filename ?? `Image ${image.image_id}`} /><span>{image.original_filename ?? `Image ${image.image_id}`}</span></button>)}
                   {images.length === 0 && <label className="data-empty-drop"><Upload size={25} /><strong>Drop images or a ZIP here</strong><span>Image archives and YOLO datasets are detected automatically.</span><input type="file" accept="image/*,.zip,application/zip" multiple onChange={(event) => { importData(event.target.files); event.currentTarget.value = ""; }} /></label>}
                 </div>
               </section>
@@ -1657,7 +1770,7 @@ export function App() {
           </div>
           <button onClick={addClass} disabled={!selectedProjectId || busy}><Plus size={16} /> Add Class</button>
           <div className="list">
-            {classes.map((labelClass) => editingClassId === labelClass.class_id ? (
+            {classes.map((labelClass, classIndex) => editingClassId === labelClass.class_id ? (
               <div className="class-edit-row" key={labelClass.class_id}>
                 <label>
                   Class name
@@ -1671,9 +1784,9 @@ export function App() {
               </div>
             ) : (
               <div className={labelClass.class_id === selectedClassId ? "list-row active" : "list-row"} key={labelClass.class_id}>
-                <button className="class-select" onClick={() => setSelectedClassId(labelClass.class_id)}>
+                <button className="class-select" onClick={() => setSelectedClassId(labelClass.class_id)} title={classIndex < 9 ? `Shortcut ${classIndex + 1}` : undefined}>
                   <span className="swatch" style={{ background: labelClass.color }} />
-                  <span>{labelClass.class_index}: {labelClass.name}</span>
+                  <span>{labelClass.class_index}: {labelClass.name}{classIndex < 9 ? ` · ${classIndex + 1}` : ""}</span>
                 </button>
                 <button className="mini-edit" onClick={() => startClassEdit(labelClass)} title="Edit class" type="button">
                   <Pencil size={14} />
@@ -1698,9 +1811,23 @@ export function App() {
             {poseProject && <button className="annotation-primary-action" onClick={startPoseCollection} disabled={!selectedImageId || selectedClassId == null || busy || !!editableSet || poseCollecting} title="Click 17 body keypoints">
               <Plus size={16} /> Add pose
             </button>}
-            {latestApproved && <button onClick={startManualEditor} disabled={busy || !!editableSet} title="Edit saved labels">
+            {latestApproved && <button onClick={startManualEditor} disabled={busy || !!editableSet || draftBoxes.length > 0 || annotationSaveState === "saving"} title="Edit saved labels">
               <Settings2 size={16} /> Edit labels
             </button>}
+            {!poseProject && selectedImage && (
+              <div className={`annotation-save-state ${annotationSaveState}`} role="status" aria-live="polite">
+                <span>{annotationSaveState === "saving" ? "Saving labels…" : annotationSaveState === "error" ? "Save failed · labels kept here" :
+                  draftBoxes.length > 0 ? "Unsaved labels" : annotationSaveState === "saved" ? "Saved" : "Draw a box to label"}</span>
+                {draftBoxes.length > 0 && annotationSaveState !== "saving" && (
+                  <div className="annotation-save-actions">
+                    <button type="button" onClick={undoDraftBox} disabled={busy} title="Undo last box (Backspace)">Undo</button>
+                    <button type="button" onClick={() => { void saveManualAnnotation(); }} disabled={busy}>
+                      {annotationSaveState === "error" ? "Retry" : "Save now"}
+                    </button>
+                  </div>
+                )}
+              </div>
+            )}
             {poseProject && (poseCollecting || draftBoxes.length > 0) && <div className="annotation-action-grid">
               <button className="primary" onClick={saveManualAnnotation} disabled={draftBoxes.length === 0 || busy || !!editableSet} title="Save labels">
                 <Save size={16} /> Save
@@ -1732,10 +1859,15 @@ export function App() {
             selectedEditableIndex={selectedReviewBoxIndex}
             classId={selectedClassId}
             classColors={classColorById}
-            onCreateBox={(box) => editableSet ? addReviewBox(box) : setDraftBoxes((current) => [...current, box])}
-            onDraftChange={updateDraftBox}
-            onDraftCancel={removeDraftBox}
-            onSaveDraft={saveManualAnnotation}
+            classNames={classNameById}
+            onCreateBox={(box) => {
+              if (editableSet) addReviewBox(box);
+              else {
+                setDraftBoxes((current) => [...current, box]);
+                if (!poseProject) setAnnotationSaveState("pending");
+              }
+            }}
+            onDrawingChange={setDrawingBox}
             onEditableSelect={setSelectedReviewBoxIndex}
             onEditableChange={updateReviewBox}
             onEditableEditStart={rememberReviewBoxes}
@@ -1746,7 +1878,7 @@ export function App() {
             poseEditing={poseProject && !!editableSet && selectedReviewBoxIndex != null}
             poseEditingKeypointIndex={selectedPoseKeypointIndex}
             onPoseEditPoint={(point) => updateSelectedPoseKeypoint(point, poseEditVisibilityMode === "visible" ? 2 : 1)}
-            busy={busy}
+            busy={busy || annotationSaveState === "saving" || annotationImageId !== selectedImageId}
           />
           {selectedImage && (
             <nav className="annotation-image-navigation" aria-label="Navigate annotation images">
@@ -1865,7 +1997,7 @@ export function App() {
                   <div className="draft-row" key={`${box.class_id}-${box.x_min}-${box.y_min}-${index}`}>
                     <span className="swatch" style={{ background: labelClass?.color ?? "#16a34a" }} />
                     <span>#{index + 1} {labelClass?.name ?? `class ${box.class_id}`}{box.keypoints ? " · 17 keypoints" : ""}</span>
-                    <button className="mini-danger" onClick={() => removeDraftBox(index)} title="Delete this box">
+                    <button className="mini-danger" onClick={() => removeDraftBox(index)} disabled={annotationSaveState === "saving"} title="Delete this box">
                       <Trash2 size={14} />
                     </button>
                   </div>
@@ -1895,7 +2027,7 @@ export function App() {
                 ))}
               </select>
             </label>
-            <button onClick={autoLabel} disabled={!selectedAutoLabelModelId || images.length === 0 || busy}><Play size={16} /> {poseProject ? "Generate pose suggestions" : "Run YOLO"}</button>
+            <button onClick={() => setAutoLabelSettingsOpen(true)} disabled={!selectedAutoLabelModelId || images.length === 0 || busy}><Play size={16} /> {poseProject ? "Generate pose suggestions" : "Run YOLO"}</button>
             <Metric label="Jobs" value={autoJobs.length} />
             <Metric label="Pending" value={pendingReviewImageIds.size} />
           </Panel>
@@ -1998,6 +2130,19 @@ export function App() {
         />
       )}
 
+      {autoLabelSettingsOpen && (
+        <AutoLabelSettingsModal
+          modelName={selectedAutoLabelModelId === "pose-pretrained"
+            ? "YOLO26 Pose pretrained"
+            : `Model v${models.find((model) => model.model_id === selectedAutoLabelModelId)?.version ?? "?"}`}
+          imageCount={images.length}
+          confidence={autoLabelConfidenceInput}
+          onConfidenceChange={setAutoLabelConfidenceInput}
+          onClose={() => setAutoLabelSettingsOpen(false)}
+          onRun={autoLabel}
+        />
+      )}
+
       {autoLabelResults && (
         <AutoLabelResultsModal
           results={autoLabelResults}
@@ -2049,7 +2194,7 @@ export function App() {
           pendingImageIds={pendingReviewImageIds}
           annotationStatuses={imageAnnotationStatuses}
           busy={busy}
-          onSelect={(imageId) => { setSelectedImageId(imageId); setImageSelectorOpen(false); }}
+          onSelect={(imageId) => { void selectAnnotationImage(imageId).then((selected) => { if (selected) setImageSelectorOpen(false); }); }}
           onReviewSelected={reviewSelectedProjectSuggestions}
           onAcceptAll={() => reviewAllProjectSuggestions("accept")}
           onRejectAll={() => reviewAllProjectSuggestions("reject")}
@@ -2106,7 +2251,7 @@ export function App() {
               <span>Set {set.annotation_set_id} · revision {set.revision} · {set.annotations.length} boxes</span>
               <div>
                 <button onClick={() => review(set, "accept")} disabled={busy}><Check size={16} /> Accept all</button>
-                <button onClick={() => startReviewEditor(set)} disabled={busy || reviewSetId === set.annotation_set_id}><Save size={16} /> Edit</button>
+                <button onClick={() => startReviewEditor(set)} disabled={busy || draftBoxes.length > 0 || annotationSaveState === "saving" || reviewSetId === set.annotation_set_id}><Save size={16} /> Edit</button>
                 <button onClick={() => review(set, "reject")} disabled={busy}><X size={16} /> Reject all</button>
               </div>
             </div>
@@ -2772,6 +2917,74 @@ function TrainingSetupModal({
             <Play size={16} /> Start training
           </button>
         </footer>
+      </section>
+    </div>
+  );
+}
+
+function AutoLabelSettingsModal({
+  modelName,
+  imageCount,
+  confidence,
+  onConfidenceChange,
+  onClose,
+  onRun,
+}: {
+  modelName: string;
+  imageCount: number;
+  confidence: string;
+  onConfidenceChange: (value: string) => void;
+  onClose: () => void;
+  onRun: (confidenceThreshold: number) => void;
+}) {
+  const threshold = Number(confidence);
+  const valid = confidence.trim() !== "" && Number.isFinite(threshold) && threshold >= 0.01 && threshold <= 1;
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [onClose]);
+
+  const submit = (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (valid) onRun(threshold);
+  };
+
+  return (
+    <div className="results-modal-backdrop" role="presentation" onMouseDown={onClose}>
+      <section className="auto-label-settings-modal" role="dialog" aria-modal="true" aria-labelledby="auto-label-settings-title" onMouseDown={(event) => event.stopPropagation()}>
+        <header className="training-modal-header">
+          <div><h3 id="auto-label-settings-title">Auto Label settings</h3><p>{modelName} · {imageCount} images in project</p></div>
+          <button className="icon-button" type="button" onClick={onClose} title="Close"><X size={18} /></button>
+        </header>
+        <form onSubmit={submit}>
+          <div className="auto-label-settings-body">
+            <label className="training-field" htmlFor="auto-label-confidence">
+              <span>Confidence threshold (0.01–1.00)</span>
+              <input
+                id="auto-label-confidence"
+                type="number"
+                min="0.01"
+                max="1"
+                step="any"
+                inputMode="decimal"
+                value={confidence}
+                onChange={(event) => onConfidenceChange(event.target.value)}
+                autoFocus
+                required
+              />
+            </label>
+            <p>Default 0.25 = 25%. A higher threshold usually gives fewer, more confident suggestions; low-confidence objects may be missed. Only unlabeled images are processed.</p>
+            {!valid && <span className="auto-label-settings-error">Enter a number from 0.01 to 1.00.</span>}
+          </div>
+          <footer className="training-modal-footer">
+            <button type="button" onClick={onClose}>Cancel</button>
+            <button className="primary" type="submit" disabled={!valid}><Play size={16} /> Start Auto Label</button>
+          </footer>
+        </form>
       </section>
     </div>
   );
@@ -3759,10 +3972,9 @@ function AnnotationCanvas({
   selectedEditableIndex,
   classId,
   classColors,
+  classNames,
   onCreateBox,
-  onDraftChange,
-  onDraftCancel,
-  onSaveDraft,
+  onDrawingChange,
   onEditableSelect,
   onEditableChange,
   onEditableEditStart,
@@ -3783,10 +3995,9 @@ function AnnotationCanvas({
   selectedEditableIndex: number | null;
   classId: number | null;
   classColors: Record<number, string>;
+  classNames: Record<number, string>;
   onCreateBox: (box: DraftBox) => void;
-  onDraftChange: (index: number, box: DraftBox) => void;
-  onDraftCancel: (index: number) => void;
-  onSaveDraft: () => void;
+  onDrawingChange: (drawing: boolean) => void;
   onEditableSelect: (index: number | null) => void;
   onEditableChange: (index: number, box: ReviewBox) => void;
   onEditableEditStart: () => void;
@@ -3805,7 +4016,6 @@ function AnnotationCanvas({
   const [current, setCurrent] = useState<{ x: number; y: number } | null>(null);
   const [imageReady, setImageReady] = useState(false);
   const [isFileDragActive, setIsFileDragActive] = useState(false);
-  const [draftMenu, setDraftMenu] = useState<{ index: number; left: number; top: number; editing: boolean } | null>(null);
   const [editDrag, setEditDrag] = useState<{
     index: number;
     mode: EditMode;
@@ -3821,12 +4031,7 @@ function AnnotationCanvas({
     setStart(null);
     setCurrent(null);
     setEditDrag(null);
-    setDraftMenu(null);
   }, [imageId]);
-
-  useEffect(() => {
-    if (draftMenu && draftMenu.index >= draftBoxes.length) setDraftMenu(null);
-  }, [draftBoxes.length, draftMenu]);
 
   const draft = useMemo(() => {
     if (!start || !current || classId == null) return null;
@@ -3894,16 +4099,24 @@ function AnnotationCanvas({
         onUploadImages(event.dataTransfer.files);
       }}
       onPointerDown={(event) => {
-        if (!imageReady) {
-          if (!image) fileInputRef.current?.click();
+        if (busy || !imageReady) {
+          if (!busy && !image) fileInputRef.current?.click();
           return;
         }
         if (poseCollecting || poseEditing) return;
         onEditableSelect(null);
+        event.currentTarget.setPointerCapture(event.pointerId);
         setStart(point(event));
+        onDrawingChange(true);
       }}
       onPointerMove={(event) => start && setCurrent(point(event))}
       onPointerUp={(event) => {
+        if (busy) {
+          setStart(null);
+          setCurrent(null);
+          onDrawingChange(false);
+          return;
+        }
         if (poseCollecting && imageReady) {
           onPosePoint(point(event));
           return;
@@ -3912,23 +4125,21 @@ function AnnotationCanvas({
           onPoseEditPoint(point(event));
           return;
         }
-        if (!start || classId == null) return;
+        if (!start || classId == null) {
+          setStart(null);
+          setCurrent(null);
+          onDrawingChange(false);
+          return;
+        }
         const box = normalizeBox(start, point(event), classId);
         if (box.x_max - box.x_min > 0.01 && box.y_max - box.y_min > 0.01) {
-          const rect = ref.current?.getBoundingClientRect();
           onCreateBox(box);
-          if (rect) {
-            setDraftMenu({
-              index: draftBoxes.length,
-              left: clampRange(event.clientX - rect.left, 12, Math.max(12, rect.width - 190)),
-              top: clampRange(event.clientY - rect.top + 10, 12, Math.max(12, rect.height - 58)),
-              editing: false,
-            });
-          }
         }
         setStart(null);
         setCurrent(null);
+        onDrawingChange(false);
       }}
+      onPointerCancel={() => { setStart(null); setCurrent(null); onDrawingChange(false); }}
     >
       <input
         ref={fileInputRef}
@@ -3956,46 +4167,16 @@ function AnnotationCanvas({
         <div className="empty canvas-upload-empty"><Upload size={24} /><span>Drop images here or click to browse</span></div>
       )}
       {isFileDragActive && <div className="canvas-drop-overlay"><Upload size={28} /><strong>Drop images to upload</strong></div>}
-      {imageReady && boxes.map((box, index) => <Box key={`box-${index}`} box={box} frame={imageFrame} tone="approved" color={classColors[box.class_id]} />)}
-      {imageReady && suggestions.map((box, index) => <Box key={`suggestion-${index}`} box={box} frame={imageFrame} tone="suggestion" color={classColors[box.class_id]} />)}
-      {imageReady && draftBoxes.map((box, index) => draftMenu?.editing && draftMenu.index === index ? (
-        <EditableBox
-          key={`draft-editable-${index}`}
-          box={{ ...box, confidence: null }}
-          frame={imageFrame}
-          color={classColors[box.class_id]}
-          selected
-          onPointerDown={(event, mode) => {
-            event.stopPropagation();
-            event.currentTarget.setPointerCapture(event.pointerId);
-            setEditDrag({ index, mode, start: point(event), box: { ...box, confidence: null } });
-          }}
-          onPointerMove={(event) => {
-            if (!editDrag) return;
-            event.stopPropagation();
-            const nextPoint = point(event);
-            const next = transformReviewBox(
-              { ...editDrag.box, confidence: null },
-              editDrag.mode,
-              nextPoint.x - editDrag.start.x,
-              nextPoint.y - editDrag.start.y,
-            );
-            const { confidence: _confidence, ...draftBox } = next;
-            onDraftChange(index, draftBox);
-          }}
-          onPointerUp={(event) => {
-            event.stopPropagation();
-            setEditDrag(null);
-          }}
-        />
-      ) : <Box key={`draft-${index}`} box={box} frame={imageFrame} tone="draft" color={classColors[box.class_id]} />)}
+      {imageReady && boxes.map((box, index) => <Box key={`box-${index}`} box={box} frame={imageFrame} tone="approved" color={classColors[box.class_id]} label={classNames[box.class_id]} />)}
+      {imageReady && suggestions.map((box, index) => <Box key={`suggestion-${index}`} box={box} frame={imageFrame} tone="suggestion" color={classColors[box.class_id]} label={classNames[box.class_id]} />)}
+      {imageReady && draftBoxes.map((box, index) => <Box key={`draft-${index}`} box={box} frame={imageFrame} tone="draft" color={classColors[box.class_id]} label={classNames[box.class_id]} />)}
       {imageReady && boxes.map((box, index) => <PoseKeypoints key={`saved-pose-${index}`} keypoints={box.keypoints ?? []} frame={imageFrame} />)}
       {imageReady && suggestions.map((box, index) => <PoseKeypoints key={`suggestion-pose-${index}`} keypoints={box.keypoints ?? []} frame={imageFrame} tone="suggestion" />)}
       {imageReady && draftBoxes.map((box, index) => <PoseKeypoints key={`draft-pose-${index}`} keypoints={box.keypoints ?? []} frame={imageFrame} />)}
       {imageReady && poseCollecting && <PoseKeypoints keypoints={posePoints} frame={imageFrame} />}
       {imageReady && editableBoxes.map((box, index) => poseEditing ? (
         <span key={`editable-pose-${index}`}>
-          <Box box={box} frame={imageFrame} tone={selectedEditableIndex === index ? "pose-editing selected" : "pose-editing"} color={classColors[box.class_id]} />
+          <Box box={box} frame={imageFrame} tone={selectedEditableIndex === index ? "pose-editing selected" : "pose-editing"} color={classColors[box.class_id]} label={classNames[box.class_id]} />
           <PoseKeypoints
             keypoints={box.keypoints ?? []}
             frame={imageFrame}
@@ -4008,18 +4189,14 @@ function AnnotationCanvas({
           box={box}
           frame={imageFrame}
           color={classColors[box.class_id]}
+          label={classNames[box.class_id]}
           selected={selectedEditableIndex === index}
           onPointerDown={(event, mode) => startEditableDrag(event, index, mode)}
           onPointerMove={moveEditableBox}
           onPointerUp={stopEditableDrag}
         />
       ))}
-      {imageReady && draft && <Box box={draft} frame={imageFrame} tone="draft" color={classColors[draft.class_id]} />}
-      {draftMenu && <div className="draft-context-menu" style={{ left: draftMenu.left, top: draftMenu.top }} onPointerDown={(event) => event.stopPropagation()}>
-        <button className="primary" onClick={onSaveDraft} disabled={busy}><Save size={15} /> Save</button>
-        <button onClick={() => setDraftMenu((current) => current ? { ...current, editing: true } : null)} disabled={busy || draftMenu.editing}><Settings2 size={15} /> Edit</button>
-        <button className="icon-button" onClick={() => { onDraftCancel(draftMenu.index); setDraftMenu(null); }} disabled={busy} title="Cancel this box"><X size={15} /></button>
-      </div>}
+      {imageReady && draft && <Box box={draft} frame={imageFrame} tone="draft" color={classColors[draft.class_id]} label={classNames[draft.class_id]} />}
     </div>
   );
 }
@@ -4070,6 +4247,7 @@ function EditableBox({
   box,
   frame,
   color,
+  label,
   selected,
   onPointerDown,
   onPointerMove,
@@ -4078,6 +4256,7 @@ function EditableBox({
   box: ReviewBox;
   frame: ImageFrame;
   color?: string;
+  label?: string;
   selected: boolean;
   onPointerDown: (event: PointerEvent<HTMLDivElement>, mode: EditMode) => void;
   onPointerMove: (event: PointerEvent<HTMLDivElement>) => void;
@@ -4092,7 +4271,7 @@ function EditableBox({
       onPointerUp={onPointerUp}
       onPointerCancel={onPointerUp}
     >
-      {box.confidence != null && <span>{box.confidence.toFixed(2)}</span>}
+      <span className="box-tag" title={label ?? `Class ${box.class_id}`} style={{ borderLeftColor: color ?? "#16a34a" }}>{label ?? `Class ${box.class_id}`}{box.confidence != null ? ` · ${box.confidence.toFixed(2)}` : ""}</span>
       {selected && (["nw", "ne", "sw", "se"] as EditMode[]).map((mode) => (
         <i
           className={`resize-handle ${mode}`}
@@ -4109,18 +4288,20 @@ function Box({
   frame,
   tone,
   color,
+  label,
 }: {
   box: Pick<AnnotationBox, "class_id" | "x_min" | "y_min" | "x_max" | "y_max"> & { confidence?: number | null };
   frame: ImageFrame;
   tone: string;
   color?: string;
+  label?: string;
 }) {
   return (
     <div
       className={`box ${tone}`}
       style={boxStyle(box, frame, color)}
     >
-      {box.confidence != null && <span>{box.confidence.toFixed(2)}</span>}
+      <span className="box-tag" title={label ?? `Class ${box.class_id}`} style={{ borderLeftColor: color ?? "#16a34a" }}>{label ?? `Class ${box.class_id}`}{box.confidence != null ? ` · ${box.confidence.toFixed(2)}` : ""}</span>
     </div>
   );
 }

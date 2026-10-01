@@ -1358,14 +1358,20 @@ h2 {
 .resize-handle.sw { bottom: -7px; cursor: nesw-resize; left: -7px; }
 .resize-handle.se { bottom: -7px; cursor: nwse-resize; right: -7px; }
 
-.box span {
-  background: #f59e0b;
-  color: #111827;
+.box .box-tag {
+  background: #0f172a;
+  border-left: 4px solid #16a34a;
+  color: #ffffff;
   display: inline-block;
   font-size: 11px;
-  font-weight: 800;
+  font-weight: 700;
   line-height: 1;
+  max-width: 160px;
+  overflow: hidden;
   padding: 4px 5px;
+  text-overflow: ellipsis;
+  vertical-align: top;
+  white-space: nowrap;
 }
 
 .strip {
@@ -1390,22 +1396,44 @@ h2 {
   font-weight: 700;
 }
 
-.draft-context-menu {
+.annotation-save-state {
   align-items: center;
-  background: #ffffff;
-  border: 1px solid #cfd8e6;
+  background: #f8fafc;
+  border: 1px solid #dfe5ee;
   border-radius: 8px;
-  box-shadow: 0 10px 28px rgb(15 23 42 / 18%);
   display: flex;
-  gap: 6px;
-  padding: 6px;
-  position: absolute;
-  z-index: 14;
+  gap: 8px;
+  justify-content: space-between;
+  padding: 8px 10px;
 }
 
-.draft-context-menu button {
-  min-height: 36px;
-  padding: 7px 10px;
+.annotation-save-state span {
+  color: #475569;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.annotation-save-state.error {
+  background: #fff7f7;
+  border-color: #fca5a5;
+}
+
+.annotation-save-state.error span {
+  color: #b91c1c;
+}
+
+.annotation-save-state.saved span {
+  color: #15803d;
+}
+
+.annotation-save-state button {
+  min-height: 30px;
+  padding: 4px 8px;
+}
+
+.annotation-save-actions {
+  display: flex;
+  gap: 5px;
 }
 
 .draft-list {
@@ -2281,6 +2309,33 @@ h2 {
   max-height: calc(100vh - 48px);
   overflow: hidden;
   width: min(680px, calc(100vw - 48px));
+}
+
+.auto-label-settings-modal {
+  background: #ffffff;
+  border: 1px solid #d9e0ea;
+  border-radius: 8px;
+  box-shadow: 0 24px 70px rgba(16, 24, 40, 0.28);
+  overflow: hidden;
+  width: min(460px, calc(100vw - 48px));
+}
+
+.auto-label-settings-body {
+  display: grid;
+  gap: 12px;
+  padding: 18px;
+}
+
+.auto-label-settings-body p {
+  color: #68758a;
+  font-size: 13px;
+  line-height: 1.45;
+  margin: 0;
+}
+
+.auto-label-settings-error {
+  color: #b91c1c;
+  font-size: 12px;
 }
 
 .new-project-form {
