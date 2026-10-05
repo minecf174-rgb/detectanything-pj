@@ -16,7 +16,11 @@ class ModelArtifactRead(BaseModel):
 class ModelRead(BaseModel):
     model_id: int
     project_id: int
-    training_run_id: int
+    training_run_id: int | None
+    uploaded_by_user_id: int | None
+    source_type: str
+    model_type: str
+    class_names: list[str] | None
     version: int
     weights_object_key: str
     precision: float | None
@@ -26,6 +30,11 @@ class ModelRead(BaseModel):
     created_at: datetime
 
     model_config = {"from_attributes": True}
+
+
+class ModelImportRead(BaseModel):
+    model: ModelRead
+    created_classes: list[str]
 
 
 class ModelDetailRead(ModelRead):

@@ -1,6 +1,7 @@
 import json
 from io import BytesIO
 from pathlib import Path
+from zipfile import ZipFile
 
 from fastapi.testclient import TestClient
 from PIL import Image as PILImage
@@ -10,6 +11,7 @@ from app.core.database.session import SessionLocal
 from app.main import app
 from app.ml.predictors.ultralytics_yolo import UltralyticsYoloPredictor
 from app.ml.trainers.ultralytics_yolo import UltralyticsYoloTrainer
+from app.modules.models.service import ModelService
 from app.modules.training.models import TrainingRun
 from app.modules.training.service import TrainingService
 
@@ -33,6 +35,108 @@ def _png_bytes() -> bytes:
     output = BytesIO()
     PILImage.new("RGB", (32, 24), "white").save(output, format="PNG")
     return output.getvalue()
+
+
+def _pt_upload() -> bytes:
+    output = BytesIO()
+    with ZipFile(output, "w") as archive:
+        archive.writestr("checkpoint/data.pkl", b"test")
+    return output.getvalue()
+
+
+def test_import_model_is_project_scoped_and_imports_classes(monkeypatch):
+    owner = _register("import-owner")
+    other = _register("import-other")
+    project = client.post(
+        "/projects", headers=owner,
+        json={"name": "Imported model", "task_type": "OBJECT_DETECTION"},
+    ).json()
+    other_project = client.post(
+        "/projects", headers=owner,
+        json={"name": "Other project", "task_type": "OBJECT_DETECTION"},
+    ).json()
+    monkeypatch.setattr(ModelService, "_inspect_uploaded_weights", staticmethod(lambda _path: ("detect", ["person", "car"], b"safe weights")))
+    payload = _pt_upload()
+
+    blocked = client.post(
+        f"/models/import?project_id={project['project_id']}", headers=other,
+        files={"file": ("best.pt", payload, "application/octet-stream")},
+    )
+    assert blocked.status_code == 403
+    imported = client.post(
+        f"/models/import?project_id={project['project_id']}", headers=owner,
+        files={"file": ("best.pt", payload, "application/octet-stream")},
+    )
+    assert imported.status_code == 201, imported.text
+    model = imported.json()["model"]
+    assert model["source_type"] == "IMPORTED"
+    assert model["training_run_id"] is None
+    assert model["class_names"] == ["person", "car"]
+    assert imported.json()["created_classes"] == ["person", "car"]
+    project_classes = client.get(f"/classes/project/{project['project_id']}", headers=owner).json()
+    assert [(item["class_index"], item["name"]) for item in project_classes] == [(0, "person"), (1, "car")]
+    assert client.delete(f"/classes/{project_classes[0]['class_id']}", headers=owner).status_code == 409
+    assert client.patch(
+        f"/classes/{project_classes[0]['class_id']}", headers=owner,
+        json={"name": "renamed", "color": "#16a34a"},
+    ).status_code == 409
+    assert client.get(f"/models/project/{other_project['project_id']}", headers=owner).json() == []
+    assert client.get(f"/models/project/{project['project_id']}", headers=other).status_code == 403
+    assert client.get(f"/models/{model['model_id']}", headers=other).status_code == 403
+    assert client.get(f"/models/{model['model_id']}/download", headers=other).status_code == 403
+    other_image = client.post(
+        f"/images/upload?project_id={other_project['project_id']}", headers=owner,
+        files={"file": ("one.png", _png_bytes(), "image/png")},
+    ).json()
+    cross_project_job = client.post(
+        "/auto-label-jobs", headers=owner,
+        json={"project_id": other_project["project_id"], "model_id": model["model_id"],
+              "image_ids": [other_image["image_id"]], "only_unlabeled": False},
+    )
+    assert cross_project_job.status_code == 400
+
+    repeated = client.post(
+        f"/models/import?project_id={project['project_id']}", headers=owner,
+        files={"file": ("best.pt", payload, "application/octet-stream")},
+    )
+    assert repeated.status_code == 201, repeated.text
+    assert repeated.json()["created_classes"] == []
+    assert repeated.json()["model"]["version"] == 2
+    weights_path = Path(get_settings().storage_root) / model["weights_object_key"]
+    assert weights_path.exists()
+    assert client.delete(f"/projects/{project['project_id']}", headers=owner).status_code == 204
+    assert not weights_path.exists()
+
+
+def test_import_model_rejects_class_or_task_mismatch_without_changes(monkeypatch):
+    owner = _register("import-conflict")
+    detect_project = client.post(
+        "/projects", headers=owner,
+        json={"name": "Conflict", "task_type": "OBJECT_DETECTION"},
+    ).json()
+    pose_project = client.post(
+        "/projects", headers=owner,
+        json={"name": "Pose conflict", "task_type": "POSE_ESTIMATION"},
+    ).json()
+    client.post(
+        "/classes", headers=owner,
+        json={"project_id": detect_project["project_id"], "name": "object", "class_index": 0, "color": "#16a34a"},
+    )
+    monkeypatch.setattr(ModelService, "_inspect_uploaded_weights", staticmethod(lambda _path: ("detect", ["person"], b"safe weights")))
+    payload = _pt_upload()
+    conflict = client.post(
+        f"/models/import?project_id={detect_project['project_id']}", headers=owner,
+        files={"file": ("best.pt", payload, "application/octet-stream")},
+    )
+    assert conflict.status_code == 409
+    assert "Class 0" in conflict.text
+    wrong_task = client.post(
+        f"/models/import?project_id={pose_project['project_id']}", headers=owner,
+        files={"file": ("best.pt", payload, "application/octet-stream")},
+    )
+    assert wrong_task.status_code == 400
+    assert client.get(f"/models/project/{detect_project['project_id']}", headers=owner).json() == []
+    assert client.get(f"/models/project/{pose_project['project_id']}", headers=owner).json() == []
 
 
 def _create_training_fixture(headers: dict[str, str]) -> tuple[int, int]:

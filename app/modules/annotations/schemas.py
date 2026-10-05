@@ -96,6 +96,7 @@ class AnnotationSetRead(BaseModel):
     source_model_id: int | None
     parent_annotation_set_id: int | None
     status: str
+    is_negative: bool
     created_by: int | None
     reviewed_by: int | None
     created_at: datetime
@@ -111,3 +112,4 @@ class ImageAnnotationStatusRead(BaseModel):
     source_type: AnnotationSourceType
     status: AnnotationStatus
     box_count: int
+    is_negative: bool

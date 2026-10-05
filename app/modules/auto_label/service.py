@@ -14,6 +14,7 @@ from app.modules.auto_label.repository import AutoLabelRepository
 from app.modules.auto_label.schemas import AutoLabelJobCreate
 from app.modules.classes.models import LabelClass
 from app.modules.images.models import Image
+from app.modules.models.class_mapping import model_class_mapping
 from app.modules.models.models import Model
 from app.modules.projects.models import Project, User
 
@@ -39,6 +40,11 @@ class AutoLabelService:
                 raise HTTPException(status_code=404, detail="Model not found")
             if model.project_id != data.project_id:
                 raise HTTPException(status_code=400, detail="Model belongs to another project")
+            if model.source_type == "IMPORTED":
+                project_classes = list(self.db.scalars(
+                    select(LabelClass).where(LabelClass.project_id == data.project_id)
+                ))
+                model_class_mapping(model, project_classes)
 
         unique_image_ids = list(dict.fromkeys(data.image_ids))
         images = list(self.db.scalars(select(Image).where(Image.image_id.in_(unique_image_ids))))
@@ -209,7 +215,10 @@ class AutoLabelService:
                 .order_by(LabelClass.class_index)
             )
         )
-        class_by_index = {label_class.class_index: label_class for label_class in classes}
+        source_model = self.db.get(Model, job.model_id) if job.model_id is not None else None
+        class_by_index = model_class_mapping(source_model, classes) if source_model else {
+            label_class.class_index: label_class for label_class in classes
+        }
         predictor = UltralyticsYoloPredictor()
         batch_size = 8
         pending_items = list(job.items)
@@ -304,7 +313,10 @@ class AutoLabelService:
                 .order_by(LabelClass.class_index)
             )
         )
-        class_by_index = {label_class.class_index: label_class for label_class in classes}
+        source_model = self.db.get(Model, job.model_id) if job.model_id is not None else None
+        class_by_index = model_class_mapping(source_model, classes) if source_model else {
+            label_class.class_index: label_class for label_class in classes
+        }
 
         raw_predictions = UltralyticsYoloPredictor().predict(
             model_path,

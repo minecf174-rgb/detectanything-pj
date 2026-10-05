@@ -15,6 +15,7 @@ import {
   Eye,
   Filter,
   Image as ImageIcon,
+  Keyboard,
   Layers3,
   MoreHorizontal,
   Pencil,
@@ -31,7 +32,7 @@ import {
   X,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { DragEvent, FormEvent, PointerEvent, ReactNode } from "react";
+import type { DragEvent, FormEvent, KeyboardEvent as ReactKeyboardEvent, PointerEvent, ReactNode } from "react";
 import {
   AnnotationBox,
   AnnotationSet,
@@ -46,6 +47,7 @@ import {
   ImageAnnotationStatus,
   LabelClass,
   ModelItem,
+  ModelImportResult,
   ModelDownloadFormat,
   ModelPrediction,
   Project,
@@ -53,6 +55,16 @@ import {
   TrainingRun,
   type AuthSession,
 } from "./api";
+import {
+  DEFAULT_SHORTCUTS,
+  loadShortcuts,
+  matchesShortcut,
+  saveShortcuts,
+  shortcutConflict,
+  shortcutFromEvent,
+  SHORTCUT_DEFINITIONS,
+  type ShortcutBindings,
+} from "./shortcuts";
 
 type DraftBox = {
   class_id: number;
@@ -94,6 +106,15 @@ type TestRunProgress = {
   currentImageIndex: number | null;
 };
 
+type OperationProgress = {
+  title: string;
+  detail: string;
+  startedAt: number;
+  completed?: number;
+  total?: number;
+  error?: string;
+};
+
 type TestResultFilter = "all" | "detected" | "no-detections" | "failed";
 
 type EditMode = "move" | "nw" | "ne" | "sw" | "se";
@@ -122,7 +143,7 @@ type AutoLabelResult = {
 
 type AutoLabelResultFilter = "all" | "detected" | "empty" | "failed" | "accepted";
 type ImageManagerFilter = "all" | "active" | "archived";
-type WorkspaceSection = "overview" | "data" | "annotate" | "train" | "models" | "test";
+type WorkspaceSection = "overview" | "data" | "annotate" | "train" | "import-model" | "models" | "test";
 
 type YoloTrainingSettings = {
   baseModel: string;
@@ -250,6 +271,8 @@ function ProjectDashboard({
 
 export function App() {
   const [session, setSession] = useState<AuthSession | null>(() => getAuthSession());
+  const [shortcuts, setShortcuts] = useState<ShortcutBindings>(() => loadShortcuts(getAuthSession()?.user.user_id));
+  const [shortcutsOpen, setShortcutsOpen] = useState(false);
   const [authChecked, setAuthChecked] = useState(false);
   const [projects, setProjects] = useState<Project[]>([]);
   const [classes, setClasses] = useState<LabelClass[]>([]);
@@ -260,6 +283,9 @@ export function App() {
   const [datasetSelectionOpen, setDatasetSelectionOpen] = useState(false);
   const [runs, setRuns] = useState<TrainingRun[]>([]);
   const [models, setModels] = useState<ModelItem[]>([]);
+  const [modelImportFile, setModelImportFile] = useState<File | null>(null);
+  const [modelImportResult, setModelImportResult] = useState<ModelImportResult | null>(null);
+  const [modelImportError, setModelImportError] = useState<string | null>(null);
   const [autoJobs, setAutoJobs] = useState<AutoLabelJob[]>([]);
 
   const [selectedProjectId, setSelectedProjectId] = useState<number | null>(null);
@@ -283,6 +309,7 @@ export function App() {
   const [pendingImportArchive, setPendingImportArchive] = useState<File | null>(null);
   const [archiveInspection, setArchiveInspection] = useState<ArchiveInspection | null>(null);
   const [imageSelectorOpen, setImageSelectorOpen] = useState(false);
+  const [imageSelectorInitialView, setImageSelectorInitialView] = useState<"browse" | "negative">("browse");
   const [datasetToView, setDatasetToView] = useState<DatasetVersion | null>(null);
   const [modelDownloadFormats, setModelDownloadFormats] = useState<Record<number, ModelDownloadFormat>>({});
   const [modelActionsOpenId, setModelActionsOpenId] = useState<number | null>(null);
@@ -319,11 +346,20 @@ export function App() {
   const [imageManagerSearch, setImageManagerSearch] = useState("");
   const [status, setStatus] = useState("Ready");
   const [busy, setBusy] = useState(false);
+  const [operationProgress, setOperationProgress] = useState<OperationProgress | null>(null);
   const [annotationSaveState, setAnnotationSaveState] = useState<"idle" | "pending" | "saving" | "saved" | "error">("idle");
   const [drawingBox, setDrawingBox] = useState(false);
   const annotationSavePromise = useRef<Promise<boolean> | null>(null);
+  const reviewShortcutInFlight = useRef(false);
   const projectRequestId = useRef(0);
   const projectActionsRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => { setShortcuts(loadShortcuts(session?.user.user_id)); }, [session?.user.user_id]);
+
+  const updateShortcuts = (next: ShortcutBindings) => {
+    setShortcuts(next);
+    if (session) saveShortcuts(session.user.user_id, next);
+  };
 
   const selectedImage = images.find((image) => image.image_id === selectedImageId) ?? null;
   const selectedProject = projects.find((project) => project.project_id === selectedProjectId) ?? null;
@@ -402,7 +438,15 @@ export function App() {
 
   const selectAnnotationImage = async (imageId: number) => {
     if (imageId === selectedImageId) return true;
+    if (poseCollecting && posePoints.length > 0) {
+      setStatus("Finish or cancel the current pose before changing images");
+      return false;
+    }
     if (!(await saveManualAnnotation())) return false;
+    if (poseCollecting) {
+      setPoseCollecting(false);
+      setPosePoints([]);
+    }
     setSelectedImageId(imageId);
     return true;
   };
@@ -488,6 +532,9 @@ export function App() {
     setSelectedDatasetVersionId(null);
     setRuns([]);
     setModels([]);
+    setModelImportFile(null);
+    setModelImportResult(null);
+    setModelImportError(null);
     setAutoJobs([]);
     setDraftBoxes([]);
     setPoseCollecting(false);
@@ -520,6 +567,7 @@ export function App() {
     setWorkspaceSection("annotate");
     setImageManagerOpen(false);
     setImageSelectorOpen(false);
+    setImageSelectorInitialView("browse");
     setPendingImportArchive(null);
     setArchiveInspection(null);
     setDatasetToView(null);
@@ -708,18 +756,28 @@ export function App() {
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
       const target = event.target as HTMLElement | null;
-      if (target?.tagName === "INPUT" || target?.tagName === "SELECT" || target?.tagName === "TEXTAREA") return;
-      if ((event.key === "Backspace" || event.key === "Delete") && editableSet && selectedReviewBoxIndex != null) {
+      if (activeView !== "workspace" || workspaceSection !== "annotate" || busy ||
+          document.querySelector('[role="dialog"][aria-modal="true"]') ||
+          target?.isContentEditable || ["INPUT", "SELECT", "TEXTAREA"].includes(target?.tagName ?? "") ||
+          event.repeat) return;
+      const undoKey = matchesShortcut(event, shortcuts, "undoDraft") || matchesShortcut(event, shortcuts, "undoDraftAlt");
+      const deleteKey = matchesShortcut(event, shortcuts, "deleteBox") || matchesShortcut(event, shortcuts, "deleteBoxAlt");
+      if (editableSet ? !deleteKey : !undoKey) return;
+      if (poseProject && poseCollecting && posePoints.length > 0) {
+        event.preventDefault();
+        undoDraftBox();
+      } else if (editableSet && selectedReviewBoxIndex != null) {
         event.preventDefault();
         deleteSelectedReviewBox();
-      } else if ((event.key === "Backspace" || event.key === "Delete") && draftBoxes.length > 0 && annotationSaveState !== "saving") {
+      } else if (!poseCollecting && draftBoxes.length > 0 && annotationSaveState !== "saving") {
         event.preventDefault();
         undoDraftBox();
       }
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [annotationSaveState, deleteSelectedReviewBox, draftBoxes.length, editableSet, selectedReviewBoxIndex, undoDraftBox]);
+  }, [activeView, annotationSaveState, busy, deleteSelectedReviewBox, draftBoxes.length, editableSet,
+    poseCollecting, posePoints.length, poseProject, selectedReviewBoxIndex, shortcuts, undoDraftBox, workspaceSection]);
 
   useEffect(() => {
     if (!autoLabelResults) return;
@@ -730,18 +788,26 @@ export function App() {
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [autoLabelResults]);
 
-  const runAction = async (label: string, action: () => Promise<unknown>, options: { refresh?: boolean } = {}) => {
+  const updateOperationProgress = (detail: string, completed?: number, total?: number) => {
+    setOperationProgress((current) => current && !current.error ? { ...current, detail, completed, total } : current);
+  };
+
+  const runAction = async (label: string, action: () => Promise<unknown>, options: { refresh?: boolean; showProgress?: boolean } = {}) => {
     setBusy(true);
     setStatus(`${label}...`);
+    if (options.showProgress) setOperationProgress({ title: label, detail: "Starting…", startedAt: Date.now() });
     try {
       await action();
       if (options.refresh !== false) {
+        if (options.showProgress) updateOperationProgress("Updating the workspace…");
         if (selectedProjectId) await refreshProject(selectedProjectId);
         if (selectedImageId) await refreshAnnotations(selectedImageId);
       }
       setStatus(`${label} done`);
+      if (options.showProgress) setOperationProgress(null);
     } catch (error) {
       setStatus(errorMessage(error));
+      if (options.showProgress) setOperationProgress((current) => current ? { ...current, error: errorMessage(error) } : null);
     } finally {
       setBusy(false);
     }
@@ -777,11 +843,13 @@ export function App() {
     if (files.length === 0 || !selectedProjectId) return;
     void runAction(`Upload ${files.length} images`, async () => {
       let lastImage: ImageItem | null = null;
-      for (const file of files) {
+      updateOperationProgress("Uploading images…", 0, files.length);
+      for (const [index, file] of files.entries()) {
         lastImage = await api.uploadImage(selectedProjectId, file);
+        updateOperationProgress(`Uploaded ${file.name}`, index + 1, files.length);
       }
       if (lastImage) await selectAnnotationImage(lastImage.image_id);
-    });
+    }, { showProgress: true });
   };
 
   const openImageManager = () => {
@@ -830,7 +898,9 @@ export function App() {
     const files = Array.from(fileList ?? []);
     if (files.length === 0 || !selectedProjectId) return;
     void runAction(`Import ${files.length} file${files.length === 1 ? "" : "s"}`, async () => {
-      for (const file of files) {
+      updateOperationProgress("Checking files…", 0, files.length);
+      for (const [index, file] of files.entries()) {
+        updateOperationProgress(`Processing ${file.name}…`, index, files.length);
         if (file.name.toLowerCase().endsWith(".zip")) {
           const inspection = await api.inspectArchive(file);
           if (inspection.archive_type === "YOLO") {
@@ -841,17 +911,20 @@ export function App() {
             setImportClassMode("all");
             setImportClassIndexes("");
             setImportClassNames(inspection.class_names.join(", "));
+            updateOperationProgress(`Inspected ${file.name}`, index + 1, files.length);
             continue;
           }
           await api.importImageArchive(selectedProjectId, file);
+          updateOperationProgress(`Imported ${file.name}`, index + 1, files.length);
           continue;
         }
         if (!file.type.startsWith("image/")) {
           throw new Error(`Unsupported file: ${file.name}`);
         }
         await api.uploadImage(selectedProjectId, file);
+        updateOperationProgress(`Imported ${file.name}`, index + 1, files.length);
       }
-    });
+    }, { showProgress: true });
   };
 
   const confirmYoloImport = () => {
@@ -879,6 +952,7 @@ export function App() {
     const selectedIndexes = importAllClasses ? undefined : indexValue;
     const selectedClassNames = importClassNames.trim() || undefined;
     void runAction("Import YOLO dataset", async () => {
+      updateOperationProgress("Importing images and labels from the archive…");
       const result = await api.importYoloZip(
         selectedProjectId,
         file,
@@ -892,7 +966,7 @@ export function App() {
       );
       setPendingImportArchive(null);
       setArchiveInspection(null);
-    });
+    }, { showProgress: true });
   };
 
   const removeDraftBox = (index: number) => {
@@ -900,11 +974,11 @@ export function App() {
   };
 
   const startPoseCollection = () => {
-    if (!selectedImageId || selectedClassId == null || editableSet) return;
+    if (!selectedImageId || selectedClassId == null || editableSet || busy || poseCollecting) return;
     setPosePoints([]);
     setPoseVisibilityMode("visible");
     setPoseCollecting(true);
-    setStatus("Mark each keypoint as visible, occluded, or outside the frame")
+    setStatus("Mark each keypoint as visible, occluded, or outside the frame");
   };
 
   const addPosePoint = (point: { x: number; y: number }) => {
@@ -1045,6 +1119,7 @@ export function App() {
             source_type: latestApproved ? "HUMAN_CORRECTED" : "HUMAN",
             status: "APPROVED",
             box_count: saved.annotations.length,
+            is_negative: false,
           },
         ]);
         return true;
@@ -1079,33 +1154,112 @@ export function App() {
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
       const target = event.target as HTMLElement | null;
+      const poseKeypointSelectShortcut = poseProject && !!editableSet &&
+        target?.dataset.poseKeypointSelect === "true" &&
+        (matchesShortcut(event, shortcuts, "previousPoint") || matchesShortcut(event, shortcuts, "nextPoint") ||
+          matchesShortcut(event, shortcuts, "save"));
       if (activeView !== "workspace" || workspaceSection !== "annotate" || imageSelectorOpen || autoLabelResults ||
-          target?.isContentEditable || ["INPUT", "SELECT", "TEXTAREA"].includes(target?.tagName ?? "")) return;
-      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "s") {
+          document.querySelector('[role="dialog"][aria-modal="true"]') ||
+          target?.isContentEditable ||
+          (["INPUT", "SELECT", "TEXTAREA"].includes(target?.tagName ?? "") && !poseKeypointSelectShortcut)) return;
+      if (busy) return;
+      if (matchesShortcut(event, shortcuts, "save")) {
         event.preventDefault();
+        if (event.repeat) return;
+        if (editableSet) {
+          saveEditedLabels();
+          return;
+        }
+        if (poseProject && poseCollecting && posePoints.length > 0) {
+          setStatus("Finish all 17 points or cancel this pose before saving");
+          return;
+        }
         void saveManualAnnotation();
         return;
       }
-      if (event.metaKey || event.ctrlKey || event.altKey || busy || editableSet || poseProject) return;
-      if (/^[1-9]$/.test(event.key)) {
-        const labelClass = classes[Number(event.key) - 1];
+      if (matchesShortcut(event, shortcuts, "cancelEdit") && (editableSet || poseCollecting)) {
+        event.preventDefault();
+        if (event.repeat) return;
+        if (editableSet) cancelReviewEditor();
+        else if (posePoints.length === 0 || window.confirm("Cancel this pose and discard its unfinished points?")) {
+          setPoseCollecting(false);
+          setPosePoints([]);
+        }
+        return;
+      }
+      if (editableSet) {
+        if (poseProject && selectedReviewBoxIndex != null &&
+            (matchesShortcut(event, shortcuts, "previousPoint") || matchesShortcut(event, shortcuts, "nextPoint"))) {
+          event.preventDefault();
+          setSelectedPoseKeypointIndex((current) => Math.max(0, Math.min(16,
+            current + (matchesShortcut(event, shortcuts, "previousPoint") ? -1 : 1))));
+        }
+        return;
+      }
+      const acceptKey = matchesShortcut(event, shortcuts, "acceptSuggestion");
+      const rejectKey = matchesShortcut(event, shortcuts, "rejectSuggestion");
+      const editKey = matchesShortcut(event, shortcuts, "editSuggestion");
+      if (!poseCollecting && (acceptKey || rejectKey || editKey)) {
+        if (pendingSuggestions.length === 0) return;
+        event.preventDefault();
+        if (event.repeat || reviewShortcutInFlight.current) return;
+        if (pendingSuggestions.length !== 1) {
+          setStatus("Multiple pending sets on this image; choose one in Review Queue");
+          return;
+        }
+        if (draftBoxes.length > 0 || poseCollecting || annotationSaveState === "saving") {
+          setStatus("Save or cancel the current draft before reviewing this suggestion");
+          return;
+        }
+        const pendingSet = pendingSuggestions[0];
+        if (editKey) {
+          startReviewEditor(pendingSet);
+          return;
+        }
+        reviewShortcutInFlight.current = true;
+        void review(pendingSet, acceptKey ? "accept" : "reject").finally(() => {
+          reviewShortcutInFlight.current = false;
+        });
+        return;
+      }
+      if (!poseCollecting && (matchesShortcut(event, shortcuts, "previousImage") || matchesShortcut(event, shortcuts, "nextImage"))) {
+        event.preventDefault();
+        navigateSelectedImage(matchesShortcut(event, shortcuts, "previousImage") ? -1 : 1);
+      } else if (poseProject) {
+        if (matchesShortcut(event, shortcuts, "addPose") && !poseCollecting && !event.repeat) {
+          event.preventDefault();
+          startPoseCollection();
+        } else if (poseCollecting && matchesShortcut(event, shortcuts, "poseVisible")) {
+          event.preventDefault();
+          setPoseVisibilityMode("visible");
+        } else if (poseCollecting && matchesShortcut(event, shortcuts, "poseOccluded")) {
+          event.preventDefault();
+          setPoseVisibilityMode("occluded");
+        } else if (poseCollecting && matchesShortcut(event, shortcuts, "poseOutside") && !event.repeat) {
+          event.preventDefault();
+          skipPosePoint();
+        }
+      } else if (!poseProject) {
+        const classIndex = Array.from({ length: 9 }, (_, index) => index)
+          .find((index) => matchesShortcut(event, shortcuts, `class${index + 1}`));
+        const labelClass = classIndex == null ? null : classes[classIndex];
         if (labelClass) {
           event.preventDefault();
           setSelectedClassId(labelClass.class_id);
         }
-      } else if (event.key === "ArrowLeft" || event.key === "ArrowRight") {
-        event.preventDefault();
-        navigateSelectedImage(event.key === "ArrowLeft" ? -1 : 1);
       }
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [activeView, autoLabelResults, busy, classes, editableSet, imageSelectorOpen, poseProject, workspaceSection,
-    selectedImageId, images, draftBoxes, annotationImageId, latestApproved, pendingSuggestions]);
+  }, [activeView, autoLabelResults, busy, classes, editableSet, imageSelectorOpen, poseProject, shortcuts, workspaceSection,
+    selectedImageId, images, draftBoxes, annotationImageId, latestApproved, pendingSuggestions,
+    poseCollecting, posePoints.length, selectedClassId, poseVisibilityMode, selectedReviewBoxIndex,
+    annotationSaveState, reviewSetId, selectedProjectId, reviewBoxes, editingManualLabels, reviewHistory.length]);
 
   const createAndBuildDataset = (imageIds: number[]) => {
     if (!selectedProjectId) return;
     void runAction("Create and build dataset version", async () => {
+      updateOperationProgress("Creating dataset version…");
       const dataset = await api.createDataset({
         project_id: selectedProjectId,
         image_ids: imageIds,
@@ -1114,10 +1268,11 @@ export function App() {
         default_split: "TRAIN",
         auto_split: true,
       });
+      updateOperationProgress("Building YOLO files from selected images…");
       await api.buildYolo(dataset.version_id);
       setSelectedDatasetVersionId(dataset.version_id);
       setDatasetSelectionOpen(false);
-    });
+    }, { showProgress: true });
   };
 
   const deleteDatasetVersion = (dataset: DatasetVersion) => {
@@ -1141,10 +1296,25 @@ export function App() {
     });
   };
 
+  const importModel = () => {
+    if (!selectedProjectId || !modelImportFile || busy) return;
+    const file = modelImportFile;
+    setModelImportResult(null);
+    setModelImportError(null);
+    void runAction("Import model", async () => {
+      updateOperationProgress("Uploading and checking model weights and classes…");
+      const result = await api.importModel(selectedProjectId, file);
+      setModelImportResult(result);
+      setModelImportFile(null);
+      updateOperationProgress("Adding model and classes to this project…");
+    }, { showProgress: true });
+  };
+
   const trainYolo = () => {
     if (!selectedProjectId || !selectedDataset) return;
     setTrainingSetupOpen(false);
     void runAction("Train YOLO", async () => {
+      updateOperationProgress("Creating training run…");
       const run = await api.createTrainingRun({
         project_id: selectedProjectId,
         version_id: selectedDataset.version_id,
@@ -1167,12 +1337,16 @@ export function App() {
           verbose: true,
         },
       });
+      updateOperationProgress("Preparing data and training the model. This can take a while…");
       await api.startYoloTraining(run.training_run_id);
-    });
+    }, { showProgress: true });
   };
 
   const resumeYolo = (runId: number) => {
-    void runAction("Resume training", () => api.resumeYoloTraining(runId));
+    void runAction("Resume training", async () => {
+      updateOperationProgress("Loading checkpoint and resuming training…");
+      await api.resumeYoloTraining(runId);
+    }, { showProgress: true });
   };
 
   const chooseTestImages = (fileList: FileList | null) => {
@@ -1283,6 +1457,7 @@ export function App() {
       let processed = mode === "all"
         ? 0
         : results.filter(Boolean).length + Object.keys(failures).length;
+      const initialProcessed = processed;
       let currentFrom = targetIndexes[0] + 1;
       let currentTo = currentFrom;
       let currentImageIndex: number | null = targetIndexes[0];
@@ -1297,6 +1472,11 @@ export function App() {
       const publishProgress = () => {
         setTestPredictions([...results]);
         setTestFailures({ ...failures });
+        updateOperationProgress(
+          processed === initialProcessed ? "Loading model and preparing test images…" : `Processing image ${currentFrom} of ${testImages.length}…`,
+          processed - initialProcessed,
+          targetIndexes.length,
+        );
         setTestProgress({
           processed,
           total: testImages.length,
@@ -1362,7 +1542,7 @@ export function App() {
           currentImageIndex: null,
         });
       }
-    }, { refresh: false });
+    }, { refresh: false, showProgress: true });
   };
 
   const showAutoLabelResults = async (job: AutoLabelJob) => {
@@ -1399,6 +1579,7 @@ export function App() {
         !Number.isFinite(confidenceThreshold) || confidenceThreshold < 0.01 || confidenceThreshold > 1) return;
     setAutoLabelSettingsOpen(false);
     void runAction("Auto label", async () => {
+      updateOperationProgress("Creating Auto label job…");
       const job = await api.createAutoLabelJob({
         project_id: selectedProjectId,
         model_id: selectedModel?.model_id ?? null,
@@ -1408,9 +1589,10 @@ export function App() {
         max_predictions_per_image: 3,
         only_unlabeled: true,
       });
+      updateOperationProgress("Starting the model…", 0, job.total_images ?? undefined);
       await api.startYoloAutoLabelAsync(job.job_id);
       await waitForAutoLabelJob(job.job_id);
-    });
+    }, { showProgress: true });
   };
 
   const waitForAutoLabelJob = async (jobId: number) => {
@@ -1418,8 +1600,14 @@ export function App() {
       await sleep(1000);
       const job = await api.getAutoLabelJob(jobId);
       setStatus(`Auto label ${job.processed_images ?? 0}/${job.total_images ?? 0} ${job.status}`);
+      updateOperationProgress(
+        job.processed_images ? "Generating suggestions…" : "Loading model and preparing images…",
+        job.processed_images ?? 0,
+        job.total_images ?? undefined,
+      );
       if (selectedProjectId) setAutoJobs(await api.listAutoLabelJobs(selectedProjectId));
       if (job.status === "COMPLETED") {
+        updateOperationProgress("Loading Auto label results…");
         await showAutoLabelResults(job);
         return;
       }
@@ -1437,6 +1625,11 @@ export function App() {
     setSelectedReviewBoxIndex(null);
     setSelectedPoseKeypointIndex(0);
     setPoseEditVisibilityMode("visible");
+  };
+
+  const cancelReviewEditor = () => {
+    if (reviewHistory.length > 0 && !window.confirm("Discard unsaved label changes?")) return;
+    closeReviewEditor();
   };
 
   const startReviewEditor = (set: AnnotationSet) => {
@@ -1490,7 +1683,7 @@ export function App() {
       result.annotationSet?.status === "PENDING" ? [result.annotationSet.annotation_set_id] : []
     ));
     if (pendingIds.length === 0) return;
-    if (!window.confirm(`Accept all ${pendingIds.length} pending auto-label results into the next dataset version?`)) return;
+    if (!window.confirm(`Accept all ${pendingIds.length} pending auto-label results? Images with no boxes will stay out of the dataset until you verify them as negative.`)) return;
     const pendingIdSet = new Set(pendingIds);
     void runAction(`Accept ${pendingIds.length} auto-label results`, async () => {
       await api.acceptAnnotationsBulk(pendingIds);
@@ -1500,6 +1693,12 @@ export function App() {
           : result
       )) ?? null);
       closeReviewEditor();
+    });
+  };
+
+  const confirmNegative = (imageId: number) => {
+    void runAction("Confirm negative image", async () => {
+      await api.confirmNegative(imageId);
     });
   };
 
@@ -1591,7 +1790,7 @@ export function App() {
   };
 
   const review = (set: AnnotationSet, mode: "accept" | "reject") => {
-    void runAction(`${mode} suggestion`, async () => {
+    return runAction(`${mode} suggestion`, async () => {
       if (mode === "accept") await api.acceptAnnotation(set.annotation_set_id);
       if (mode === "reject") await api.rejectAnnotation(set.annotation_set_id);
       if (set.annotation_set_id === reviewSetId) closeReviewEditor();
@@ -1609,21 +1808,15 @@ export function App() {
   };
 
   const download = async (label: string, getBlob: () => Promise<Blob>, filename: string) => {
-    try {
-      setBusy(true);
-      setStatus(`${label}...`);
+    await runAction(label, async () => {
+      updateOperationProgress("Preparing download…");
       const url = URL.createObjectURL(await getBlob());
       const link = document.createElement("a");
       link.href = url;
       link.download = filename;
       link.click();
       URL.revokeObjectURL(url);
-      setStatus(`${label} done`);
-    } catch (error) {
-      setStatus(errorMessage(error));
-    } finally {
-      setBusy(false);
-    }
+    }, { refresh: false, showProgress: true });
   };
 
   if (!authChecked) return <div className="auth-loading">Checking your session...</div>;
@@ -1643,6 +1836,7 @@ export function App() {
           <span className="brand-copy"><strong>CV Platform</strong><small>{status}</small></span>
         </button>
         <div className="topbar-actions">
+          <button type="button" className="shortcut-settings-trigger" onClick={() => setShortcutsOpen(true)} disabled={busy} title="View and customize keyboard shortcuts"><Keyboard size={17} /> <span>Shortcuts</span></button>
           <span className="account-name user-chip">{session.user.username || session.user.email}</span>
           <button onClick={logout} disabled={busy}>Sign out</button>
           <button className="icon-button" onClick={() => void refreshAll()} disabled={busy} title="Refresh"><RefreshCw size={18} /></button>
@@ -1690,9 +1884,10 @@ export function App() {
               <button className={workspaceSection === "overview" ? "active" : ""} onClick={() => setWorkspaceSection("overview")} type="button"><BarChart3 size={17} /> Overview</button>
               <button className={workspaceSection === "data" ? "active" : ""} onClick={() => setWorkspaceSection("data")} type="button"><Database size={17} /> Data</button>
               <button className={workspaceSection === "annotate" ? "active" : ""} onClick={() => setWorkspaceSection("annotate")} type="button"><Boxes size={17} /> Annotate</button>
-              <div className={`workspace-nav-group ${["train", "models", "test"].includes(workspaceSection) ? "active" : ""}`}>
+              <div className={`workspace-nav-group ${["train", "import-model", "models", "test"].includes(workspaceSection) ? "active" : ""}`}>
                 <span><Layers3 size={17} /> Models</span>
                 <button className={workspaceSection === "train" ? "active" : ""} onClick={() => setWorkspaceSection("train")} type="button"><Settings2 size={15} /> Train</button>
+                <button className={workspaceSection === "import-model" ? "active" : ""} onClick={() => setWorkspaceSection("import-model")} type="button"><Upload size={15} /> Import model</button>
                 <button className={workspaceSection === "models" ? "active" : ""} onClick={() => setWorkspaceSection("models")} type="button"><Download size={15} /> Download</button>
                 <button className={workspaceSection === "test" ? "active" : ""} onClick={() => setWorkspaceSection("test")} type="button"><TestTube2 size={15} /> Test</button>
               </div>
@@ -1747,7 +1942,7 @@ export function App() {
                 <div className="panel-heading"><strong>Version control</strong><span>View, download, or remove dataset snapshots.</span></div>
                 <div className="dataset-version-list">
                   {[...datasets].reverse().map((dataset) => <div className="dataset-version-row" key={dataset.version_id}>
-                    <div><strong>Version {dataset.version_number}</strong><span>{dataset.items.length} labeled images · {new Date(dataset.created_at).toLocaleDateString()}</span></div>
+                    <div><strong>Version {dataset.version_number}</strong><span>{dataset.items.length} images · {new Date(dataset.created_at).toLocaleDateString()}</span></div>
                     <button className="icon-button" onClick={() => setDatasetToView(dataset)} title="View version"><Eye size={16} /></button>
                     <button className="icon-button" onClick={() => void download("Download dataset", () => api.downloadDataset(dataset.version_id), `dataset-v${dataset.version_number}.zip`)} disabled={busy} title="Download version"><Download size={16} /></button>
                     <button className="icon-button danger-button" onClick={() => deleteDatasetVersion(dataset)} disabled={busy} title="Delete version"><Trash2 size={16} /></button>
@@ -1784,9 +1979,9 @@ export function App() {
               </div>
             ) : (
               <div className={labelClass.class_id === selectedClassId ? "list-row active" : "list-row"} key={labelClass.class_id}>
-                <button className="class-select" onClick={() => setSelectedClassId(labelClass.class_id)} title={classIndex < 9 ? `Shortcut ${classIndex + 1}` : undefined}>
+                <button className="class-select" onClick={() => setSelectedClassId(labelClass.class_id)} title={!poseProject && classIndex < 9 ? `Shortcut ${shortcuts[`class${classIndex + 1}`] || "unassigned"}` : undefined}>
                   <span className="swatch" style={{ background: labelClass.color }} />
-                  <span>{labelClass.class_index}: {labelClass.name}{classIndex < 9 ? ` · ${classIndex + 1}` : ""}</span>
+                  <span>{labelClass.class_index}: {labelClass.name}{!poseProject && classIndex < 9 && shortcuts[`class${classIndex + 1}`] ? ` · ${shortcuts[`class${classIndex + 1}`]}` : ""}</span>
                 </button>
                 <button className="mini-edit" onClick={() => startClassEdit(labelClass)} title="Edit class" type="button">
                   <Pencil size={14} />
@@ -1808,8 +2003,8 @@ export function App() {
               </button>
               <small>{selectedImage ? `Viewing #${selectedImageIndex} · ${selectedImage.original_filename ?? `image-${selectedImageIndex}`}` : "No image selected"}</small>
             </div>
-            {poseProject && <button className="annotation-primary-action" onClick={startPoseCollection} disabled={!selectedImageId || selectedClassId == null || busy || !!editableSet || poseCollecting} title="Click 17 body keypoints">
-              <Plus size={16} /> Add pose
+            {poseProject && <button className="annotation-primary-action" onClick={startPoseCollection} disabled={!selectedImageId || selectedClassId == null || busy || !!editableSet || poseCollecting} title={`Start a pose (${shortcuts.addPose || "unassigned"}), then click 17 body keypoints`}>
+              <Plus size={16} /> Add pose{shortcuts.addPose ? ` · ${shortcuts.addPose}` : ""}
             </button>}
             {latestApproved && <button onClick={startManualEditor} disabled={busy || !!editableSet || draftBoxes.length > 0 || annotationSaveState === "saving"} title="Edit saved labels">
               <Settings2 size={16} /> Edit labels
@@ -1820,7 +2015,7 @@ export function App() {
                   draftBoxes.length > 0 ? "Unsaved labels" : annotationSaveState === "saved" ? "Saved" : "Draw a box to label"}</span>
                 {draftBoxes.length > 0 && annotationSaveState !== "saving" && (
                   <div className="annotation-save-actions">
-                    <button type="button" onClick={undoDraftBox} disabled={busy} title="Undo last box (Backspace)">Undo</button>
+                    <button type="button" onClick={undoDraftBox} disabled={busy} title={`Undo last box (${shortcuts.undoDraft || "unassigned"})`}>Undo</button>
                     <button type="button" onClick={() => { void saveManualAnnotation(); }} disabled={busy}>
                       {annotationSaveState === "error" ? "Retry" : "Save now"}
                     </button>
@@ -1829,10 +2024,10 @@ export function App() {
               </div>
             )}
             {poseProject && (poseCollecting || draftBoxes.length > 0) && <div className="annotation-action-grid">
-              <button className="primary" onClick={saveManualAnnotation} disabled={draftBoxes.length === 0 || busy || !!editableSet} title="Save labels">
-                <Save size={16} /> Save
+              <button className="primary" onClick={saveManualAnnotation} disabled={draftBoxes.length === 0 || (poseCollecting && posePoints.length > 0) || busy || !!editableSet} title={`Save completed poses (${shortcuts.save || "unassigned"})`}>
+                <Save size={16} /> Save <kbd>{shortcuts.save || "—"}</kbd>
               </button>
-              <button onClick={undoDraftBox} disabled={(poseCollecting ? posePoints.length === 0 : draftBoxes.length === 0) || busy || !!editableSet} title="Undo last label">
+              <button onClick={undoDraftBox} disabled={(poseCollecting ? posePoints.length === 0 : draftBoxes.length === 0) || busy || !!editableSet} title={`${poseCollecting ? "Undo last point" : "Undo last unsaved pose"} (${shortcuts.undoDraft || "unassigned"})`}>
                 <Undo2 size={16} /> Undo
               </button>
               <button onClick={() => poseCollecting ? setPosePoints([]) : setDraftBoxes([])} disabled={(poseCollecting ? posePoints.length === 0 : draftBoxes.length === 0) || busy || !!editableSet} title="Clear draft labels">
@@ -1841,10 +2036,10 @@ export function App() {
             </div>}
             {poseCollecting && <div className="pose-sidebar-progress">
               <div><strong>Adding pose</strong><span>{posePoints.length}/17 · {POSE_KEYPOINT_NAMES[posePoints.length] ?? "done"}</span></div>
-              <button className={poseVisibilityMode === "visible" ? "active" : ""} onClick={() => setPoseVisibilityMode("visible")} type="button">Visible</button>
-              <button className={poseVisibilityMode === "occluded" ? "active" : ""} onClick={() => setPoseVisibilityMode("occluded")} type="button">Occluded</button>
-              <button className="outside-frame-action" onClick={skipPosePoint} type="button">Outside frame</button>
-              <button onClick={() => { setPoseCollecting(false); setPosePoints([]); }} type="button">Cancel</button>
+              <button className={poseVisibilityMode === "visible" ? "active" : ""} onClick={() => setPoseVisibilityMode("visible")} type="button">Visible{shortcuts.poseVisible ? ` · ${shortcuts.poseVisible}` : ""}</button>
+              <button className={poseVisibilityMode === "occluded" ? "active" : ""} onClick={() => setPoseVisibilityMode("occluded")} type="button">Occluded{shortcuts.poseOccluded ? ` · ${shortcuts.poseOccluded}` : ""}</button>
+              <button className="outside-frame-action" onClick={skipPosePoint} type="button">Outside frame{shortcuts.poseOutside ? ` · ${shortcuts.poseOutside}` : ""}</button>
+              <button onClick={() => { if (posePoints.length === 0 || window.confirm("Cancel this pose and discard its unfinished points?")) { setPoseCollecting(false); setPosePoints([]); } }} type="button">Cancel{shortcuts.cancelEdit ? ` · ${shortcuts.cancelEdit}` : ""}</button>
             </div>}
           </div>
         </aside>
@@ -1886,7 +2081,7 @@ export function App() {
                 className="icon-button"
                 onClick={() => navigateSelectedImage(-1)}
                 disabled={busy || selectedImageIndex <= 1}
-                title="Previous image"
+                title={`Previous image (${shortcuts.previousImage || "unassigned"})`}
                 aria-label="Previous image"
                 type="button"
               ><ChevronLeft size={20} /></button>
@@ -1917,7 +2112,7 @@ export function App() {
                 className="icon-button"
                 onClick={() => navigateSelectedImage(1)}
                 disabled={busy || selectedImageIndex >= images.length}
-                title="Next image"
+                title={`Next image (${shortcuts.nextImage || "unassigned"})`}
                 aria-label="Next image"
                 type="button"
               ><ChevronRight size={20} /></button>
@@ -1958,7 +2153,7 @@ export function App() {
                   </label>
                   <label>
                     <span>Keypoint</span>
-                    <select value={selectedPoseKeypointIndex} onChange={(event) => setSelectedPoseKeypointIndex(Number(event.target.value))}>
+                    <select data-pose-keypoint-select="true" value={selectedPoseKeypointIndex} onChange={(event) => setSelectedPoseKeypointIndex(Number(event.target.value))}>
                       {POSE_KEYPOINT_NAMES.map((name, index) => (
                         <option value={index} key={name}>{index + 1}. {name}</option>
                       ))}
@@ -1969,10 +2164,10 @@ export function App() {
                     <button className={poseEditVisibilityMode === "occluded" ? "active" : ""} onClick={() => setPoseEditVisibilityMode("occluded")} type="button">Occluded</button>
                     <button onClick={() => updateSelectedPoseKeypoint(null, 0)} type="button">Outside frame</button>
                   </div>
-                  <span className="pose-editor-hint">Choose a state, then click the point on the image.</span>
+                  <span className="pose-editor-hint">{shortcuts.previousPoint || "—"} previous · {shortcuts.nextPoint || "—"} next. Click image to move the selected point; it then advances automatically.</span>
                 </div>
               )}
-              <button className="danger-button" onClick={deleteSelectedReviewBox} disabled={selectedReviewBoxIndex == null || busy} title="Delete selected noise box">
+              <button className="danger-button" onClick={deleteSelectedReviewBox} disabled={selectedReviewBoxIndex == null || busy} title={`Delete selected box (${shortcuts.deleteBox || "unassigned"})`}>
                 <Trash2 size={16} /> Delete box
               </button>
               <button onClick={undoReviewEdit} disabled={reviewHistory.length === 0 || busy} title="Undo review edit">
@@ -1982,10 +2177,10 @@ export function App() {
                 <RefreshCw size={16} /> Reset
               </button>
               <button className="primary" onClick={saveEditedLabels} disabled={busy}>
-                <Save size={16} /> {editingManualLabels ? "Save revision" : "Save corrected"}
+                <Save size={16} /> {editingManualLabels ? "Save revision" : "Save corrected"} <kbd>{shortcuts.save || "—"}</kbd>
               </button>
-              <button onClick={closeReviewEditor} disabled={busy} title="Cancel label editing">
-                <X size={16} /> Cancel
+              <button onClick={cancelReviewEditor} disabled={busy} title={`Cancel label editing (${shortcuts.cancelEdit || "unassigned"})`}>
+                <X size={16} /> Cancel <kbd>{shortcuts.cancelEdit || "—"}</kbd>
               </button>
             </div>
           )}
@@ -2019,10 +2214,10 @@ export function App() {
                 disabled={busy || (!poseProject && models.length === 0)}
               >
                 {poseProject && <option value="pose-pretrained">YOLO26 Pose pretrained (label assist)</option>}
-                {!poseProject && models.length === 0 && <option value="">No trained model</option>}
+                {!poseProject && models.length === 0 && <option value="">No model available</option>}
                 {[...models].reverse().map((model) => (
                   <option value={model.model_id} key={model.model_id}>
-                    Model v{model.version} · mAP50 {formatMetric(model.map50)}
+                    Model v{model.version} · {model.source_type === "IMPORTED" ? "Imported" : `mAP50 ${formatMetric(model.map50)}`}
                   </option>
                 ))}
               </select>
@@ -2071,14 +2266,55 @@ export function App() {
           </main>
         )}
 
+        {workspaceSection === "import-model" && (
+          <main className="section-page">
+            <PageHeading eyebrow="MODELS / IMPORT" title="Import model" description={`Add trusted YOLO weights to ${selectedProject?.name ?? "this project"} and import their class names automatically.`} />
+            <section className="section-panel model-import-panel">
+              <div className="panel-heading"><strong>Upload YOLO weights</strong><span>{selectedProjectTask === "POSE_ESTIMATION" ? "17-keypoint Pose Estimation" : "Object Detection"} project</span></div>
+              <p>Select an Ultralytics <code>.pt</code> file. The server checks its task and class names, then adds any missing classes to this project. Existing classes must have the same names at the same indexes; nothing is overwritten.</p>
+              <label className="model-import-file">
+                <Upload size={25} />
+                <strong>{modelImportFile?.name ?? "Choose a .pt model file"}</strong>
+                <span>{modelImportFile ? `${(modelImportFile.size / (1024 * 1024)).toFixed(1)} MB · ready to import` : "Up to 200 MB · YOLO Detect or YOLO Pose"}</span>
+                <input type="file" accept=".pt" disabled={busy} onChange={(event) => {
+                  const file = event.target.files?.[0] ?? null;
+                  setModelImportResult(null);
+                  if (file && (!file.name.toLowerCase().endsWith(".pt") || file.size > 200 * 1024 * 1024)) {
+                    setModelImportFile(null);
+                    setModelImportError(file.size > 200 * 1024 * 1024 ? "Model file must be 200 MB or smaller" : "Choose a .pt model file");
+                  } else { setModelImportFile(file); setModelImportError(null); }
+                  event.currentTarget.value = "";
+                }} />
+              </label>
+              {modelImportError && <p className="model-import-error" role="alert">{modelImportError}</p>}
+              <p className="model-import-warning"><CircleAlert size={17} /> Import only weights from a trusted source. PyTorch .pt checkpoints can contain executable code.</p>
+              <button className="primary model-import-submit" type="button" onClick={importModel} disabled={!modelImportFile || busy}><Upload size={17} /> Import into this project</button>
+            </section>
+            {modelImportResult && <section className="section-panel model-import-success" role="status">
+              <Check size={22} />
+              <div><strong>Model v{modelImportResult.model.version} imported into {selectedProject?.name ?? "this project"}</strong>
+                <span>{modelImportResult.model.class_names?.length ?? 0} classes in model · {modelImportResult.created_classes.length} new classes added</span>
+                <p>{modelImportResult.model.class_names?.map((name, index) => `${index}: ${name}`).join(" · ")}</p>
+              </div>
+              <button type="button" onClick={() => setWorkspaceSection("test")}>Test model <ChevronRight size={16} /></button>
+            </section>}
+            <section className="section-panel model-import-existing">
+              <div className="panel-heading"><strong>Imported in this project</strong><span>{models.filter((model) => model.source_type === "IMPORTED").length} models</span></div>
+              {models.filter((model) => model.source_type === "IMPORTED").length === 0 ? <span className="muted">No imported models in this project yet.</span> :
+                [...models].reverse().filter((model) => model.source_type === "IMPORTED").map((model) =>
+                  <div className="model-import-item" key={model.model_id}><strong>Model v{model.version}</strong><span>{model.model_type === "YOLO26_POSE" ? "Pose" : "Object Detection"} · {model.class_names?.length ?? 0} classes</span><small>{model.class_names?.join(", ")}</small></div>)}
+            </section>
+          </main>
+        )}
+
         {workspaceSection === "models" && (
           <main className="section-page">
-            <PageHeading eyebrow="MODELS / DOWNLOAD" title="Download models" description="Choose a trained version and the format required by your deployment target." />
+            <PageHeading eyebrow="MODELS / DOWNLOAD" title="Download models" description="Choose a trained or imported model and the format required by your deployment target." />
             <section className="model-version-list">
               {[...models].reverse().map((model) => (
                 <article className="section-panel model-version-row" key={model.model_id}>
                   <span className="model-version-icon"><Layers3 size={20} /></span>
-                  <div><strong>Model v{model.version}</strong><span>Trained artifact</span></div>
+                  <div><strong>Model v{model.version}</strong><span>{model.source_type === "IMPORTED" ? "Imported model" : "Trained artifact"}</span></div>
                   <Metric label="mAP50" value={formatMetric(model.map50)} />
                   <label className="model-format-field"><span>Format</span><select value={modelDownloadFormats[model.model_id] ?? "pt"} onChange={(event) => setModelDownloadFormats((current) => ({ ...current, [model.model_id]: event.target.value as ModelDownloadFormat }))}><option value="pt">PyTorch (.pt)</option><option value="onnx">ONNX (.onnx)</option><option value="torchscript">TorchScript (.torchscript)</option></select></label>
                   <div className="model-row-actions" data-model-actions={model.model_id}>
@@ -2094,7 +2330,7 @@ export function App() {
                   </div>
                 </article>
               ))}
-              {models.length === 0 && <section className="section-panel section-empty"><Layers3 size={26} /><strong>No trained models yet</strong><span>Build a dataset and start a training run first.</span><button onClick={() => setWorkspaceSection("train")}><ChevronRight size={16} /> Go to training</button></section>}
+              {models.length === 0 && <section className="section-panel section-empty"><Layers3 size={26} /><strong>No models yet</strong><span>Train a model or import trusted YOLO weights into this project.</span><button onClick={() => setWorkspaceSection("import-model")}><ChevronRight size={16} /> Import model</button></section>}
             </section>
           </main>
         )}
@@ -2152,6 +2388,7 @@ export function App() {
           onOpen={openAutoLabelResult}
           onAcceptAll={acceptAllAutoLabelResults}
           onRejectAll={rejectAllAutoLabelResults}
+          onReviewNegatives={() => { setAutoLabelResults(null); setImageSelectorInitialView("negative"); setImageSelectorOpen(true); }}
           busy={busy}
         />
       )}
@@ -2195,11 +2432,14 @@ export function App() {
           pendingImageIds={pendingReviewImageIds}
           annotationStatuses={imageAnnotationStatuses}
           busy={busy}
-          onSelect={(imageId) => { void selectAnnotationImage(imageId).then((selected) => { if (selected) setImageSelectorOpen(false); }); }}
+          initialView={imageSelectorInitialView}
+          onSelect={(imageId) => { void selectAnnotationImage(imageId).then((selected) => { if (selected) { setImageSelectorOpen(false); setImageSelectorInitialView("browse"); } }); }}
+          onConfirmNegative={confirmNegative}
+          onDrawNegative={(imageId) => { void selectAnnotationImage(imageId).then((selected) => { if (selected) { setImageSelectorOpen(false); setImageSelectorInitialView("browse"); } }); }}
           onReviewSelected={reviewSelectedProjectSuggestions}
           onAcceptAll={() => reviewAllProjectSuggestions("accept")}
           onRejectAll={() => reviewAllProjectSuggestions("reject")}
-          onClose={() => setImageSelectorOpen(false)}
+          onClose={() => { setImageSelectorOpen(false); setImageSelectorInitialView("browse"); }}
         />
       )}
 
@@ -2251,16 +2491,135 @@ export function App() {
             <div className="review-row" key={set.annotation_set_id}>
               <span>Set {set.annotation_set_id} · revision {set.revision} · {set.annotations.length} boxes</span>
               <div>
-                <button onClick={() => review(set, "accept")} disabled={busy}><Check size={16} /> Accept all</button>
-                <button onClick={() => startReviewEditor(set)} disabled={busy || draftBoxes.length > 0 || annotationSaveState === "saving" || reviewSetId === set.annotation_set_id}><Save size={16} /> Edit</button>
-                <button onClick={() => review(set, "reject")} disabled={busy}><X size={16} /> Reject all</button>
+                <button onClick={() => { void review(set, "accept"); }} disabled={busy || draftBoxes.length > 0 || poseCollecting || annotationSaveState === "saving"}><Check size={16} /> Accept all{pendingSuggestions.length === 1 && shortcuts.acceptSuggestion ? ` · ${shortcuts.acceptSuggestion}` : ""}</button>
+                <button onClick={() => startReviewEditor(set)} disabled={busy || draftBoxes.length > 0 || poseCollecting || annotationSaveState === "saving" || reviewSetId === set.annotation_set_id}><Save size={16} /> Edit{pendingSuggestions.length === 1 && shortcuts.editSuggestion ? ` · ${shortcuts.editSuggestion}` : ""}</button>
+                <button onClick={() => { void review(set, "reject"); }} disabled={busy || draftBoxes.length > 0 || poseCollecting || annotationSaveState === "saving"}><X size={16} /> Reject all{pendingSuggestions.length === 1 && shortcuts.rejectSuggestion ? ` · ${shortcuts.rejectSuggestion}` : ""}</button>
               </div>
             </div>
           ))}
         </section>
       )}
+      {operationProgress && (
+        <OperationProgressModal
+          progress={operationProgress}
+          onClose={() => setOperationProgress(null)}
+        />
+      )}
+      {shortcutsOpen && (
+        <ShortcutSettingsModal
+          bindings={shortcuts}
+          onChange={updateShortcuts}
+          onClose={() => setShortcutsOpen(false)}
+        />
+      )}
     </div>
   );
+}
+
+function OperationProgressModal({ progress, onClose }: { progress: OperationProgress; onClose: () => void }) {
+  const [now, setNow] = useState(Date.now());
+  const dialogRef = useRef<HTMLElement>(null);
+  useEffect(() => { dialogRef.current?.focus(); }, []);
+  useEffect(() => {
+    if (progress.error) return;
+    const timer = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, [progress.error]);
+  const hasCount = progress.total != null && progress.total > 0 && progress.completed != null;
+  const completed = hasCount ? Math.min(progress.completed!, progress.total!) : 0;
+  const percent = hasCount ? Math.round((completed / progress.total!) * 100) : null;
+
+  return <div className="operation-modal-backdrop">
+    <section className="operation-modal" ref={dialogRef} tabIndex={-1} role="dialog" aria-modal="true" aria-labelledby="operation-modal-title" aria-describedby="operation-modal-detail">
+      <div className={progress.error ? "operation-modal-icon error" : "operation-modal-icon"}>
+        {progress.error ? <CircleAlert size={25} /> : <RefreshCw size={25} className="operation-modal-spinner" />}
+      </div>
+      <div className="operation-modal-content">
+        <h3 id="operation-modal-title">{progress.error ? `${progress.title} failed` : progress.title}</h3>
+        <p id="operation-modal-detail" role="status" aria-live="polite">{progress.error ?? progress.detail}</p>
+        {hasCount ? <>
+          <div className="operation-modal-count"><span>{completed} / {progress.total} completed</span><strong>{percent}%</strong></div>
+          <progress max={progress.total} value={completed} aria-label={`${progress.title} progress`} />
+        </> : !progress.error && <progress aria-label={`${progress.title} in progress`} />}
+        <span className="operation-modal-time">Elapsed {formatDuration(now - progress.startedAt)}</span>
+        {progress.error && <button type="button" className="primary" onClick={onClose}>Close</button>}
+      </div>
+    </section>
+  </div>;
+}
+
+function ShortcutSettingsModal({ bindings, onChange, onClose }: {
+  bindings: ShortcutBindings;
+  onChange: (bindings: ShortcutBindings) => void;
+  onClose: () => void;
+}) {
+  const [recording, setRecording] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const groups = [...new Set(SHORTCUT_DEFINITIONS.map((item) => item.group))];
+
+  useEffect(() => {
+    if (recording) return;
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") { event.preventDefault(); onClose(); }
+    };
+    window.addEventListener("keydown", closeOnEscape);
+    return () => window.removeEventListener("keydown", closeOnEscape);
+  }, [onClose, recording]);
+
+  const assign = (id: string, key: string) => {
+    const conflict = shortcutConflict(bindings, id, key);
+    if (conflict) {
+      setError(`${key} is already used by “${conflict.label}” in the same workflow. Change that shortcut first.`);
+      return;
+    }
+    onChange({ ...bindings, [id]: key });
+    setRecording(null);
+    setError(null);
+  };
+
+  const record = (event: ReactKeyboardEvent<HTMLButtonElement>, id: string) => {
+    if (recording !== id) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const key = shortcutFromEvent(event);
+    if (!key) { setError("Choose a letter, number, arrow, or shortcut combination (not Tab or a modifier alone)."); return; }
+    if (key === "Enter" || key === "Space") { setError("Enter and Space activate buttons. Choose another key."); return; }
+    if (/^Mod\+(?:R|W|T|N|L|P|Q)$/.test(key)) {
+      setError(`${key} is reserved by the browser. Choose another key.`);
+      return;
+    }
+    assign(id, key);
+  };
+
+  return <div className="results-modal-backdrop shortcut-settings-backdrop" role="presentation">
+    <section className="shortcut-settings-modal" role="dialog" aria-modal="true" aria-labelledby="shortcut-settings-title">
+      <header className="shortcut-settings-header">
+        <div><h2 id="shortcut-settings-title">Keyboard shortcuts</h2><p>Choose the keys that fit your labeling workflow. Changes are saved for your account on this browser.</p></div>
+        <button type="button" className="icon-button" onClick={onClose} title="Close shortcut settings"><X size={20} /></button>
+      </header>
+      <div className="shortcut-settings-note">Shortcuts work in Annotate when no dialog or text field is active. Click a key to record a new one. Keys can be shared only when their actions never run in the same workflow.</div>
+      {error && <div className="shortcut-settings-error" role="alert">{error}</div>}
+      <div className="shortcut-settings-list">
+        {groups.map((group) => <section className="shortcut-settings-group" key={group}>
+          <h3>{group}</h3>
+          {SHORTCUT_DEFINITIONS.filter((item) => item.group === group).map((item) => <div className="shortcut-settings-row" key={item.id}>
+            <div><strong>{item.label}</strong><span>{item.description}</span></div>
+            <div className="shortcut-settings-controls">
+              <button type="button" className={recording === item.id ? "shortcut-recording" : "shortcut-record"}
+                aria-label={`Change ${item.label} shortcut`}
+                onClick={() => { setRecording(recording === item.id ? null : item.id); setError(null); }}
+                onKeyDown={(event) => record(event, item.id)}>
+                {recording === item.id ? "Press a key…" : <kbd>{bindings[item.id] || "Unassigned"}</kbd>}
+              </button>
+              <button type="button" className="shortcut-reset" onClick={() => assign(item.id, item.defaultKey)} disabled={bindings[item.id] === item.defaultKey} title={`Reset ${item.label}`}>Reset</button>
+              <button type="button" className="shortcut-reset" onClick={() => assign(item.id, "")} disabled={!bindings[item.id]} title={`Remove ${item.label} shortcut`}>Clear</button>
+            </div>
+          </div>)}
+        </section>)}
+      </div>
+      <footer className="shortcut-settings-footer"><button type="button" onClick={() => { onChange({ ...DEFAULT_SHORTCUTS }); setRecording(null); setError(null); }}>Reset all to defaults</button><button type="button" className="primary" onClick={onClose}>Done</button></footer>
+    </section>
+  </div>;
 }
 
 function ImageSelectorModal({
@@ -2271,7 +2630,10 @@ function ImageSelectorModal({
   pendingImageIds,
   annotationStatuses,
   busy,
+  initialView,
   onSelect,
+  onConfirmNegative,
+  onDrawNegative,
   onReviewSelected,
   onAcceptAll,
   onRejectAll,
@@ -2284,7 +2646,10 @@ function ImageSelectorModal({
   pendingImageIds: Set<number>;
   annotationStatuses: ImageAnnotationStatus[];
   busy: boolean;
+  initialView: "browse" | "negative";
   onSelect: (imageId: number) => void;
+  onConfirmNegative: (imageId: number) => void;
+  onDrawNegative: (imageId: number) => void;
   onReviewSelected: (imageIds: number[], mode: "accept" | "reject") => void;
   onAcceptAll: () => void;
   onRejectAll: () => void;
@@ -2294,7 +2659,8 @@ function ImageSelectorModal({
   const selectedIndex = Math.max(0, images.findIndex((image) => image.image_id === selectedImageId));
   const initialStart = Math.floor(selectedIndex / batchSize) * batchSize;
   const [search, setSearch] = useState("");
-  const [filter, setFilter] = useState<"all" | "labeled" | "needs-drawing" | "approved" | "pending" | "rejected">("all");
+  const [view, setView] = useState<"browse" | "negative">(initialView);
+  const [filter, setFilter] = useState<"all" | "labeled" | "needs-drawing" | "negative" | "approved" | "pending" | "rejected">("all");
   const [selectingMultiple, setSelectingMultiple] = useState(false);
   const [selectedPendingImageIds, setSelectedPendingImageIds] = useState<Set<number>>(new Set());
   const [rangeStart, setRangeStart] = useState(initialStart);
@@ -2310,6 +2676,9 @@ function ImageSelectorModal({
     () => new Map(annotationStatuses.map((status) => [status.image_id, status])),
     [annotationStatuses],
   );
+  const noBoxReviewCount = annotationStatuses.filter((status) =>
+    status.source_type === "MODEL" && status.status === "APPROVED" && status.box_count === 0 && !status.is_negative
+  ).length;
   const searched = useMemo(() => {
     const query = search.trim().toLowerCase();
     if (!query) return images;
@@ -2323,21 +2692,23 @@ function ImageSelectorModal({
   const filtered = useMemo(() => searched.filter((image) => {
     const status = statusByImage.get(image.image_id);
     if (filter === "labeled") return !!status && status.box_count > 0 && status.status !== "REJECTED";
+    if (filter === "negative") return status?.is_negative === true;
     if (filter === "approved") return status?.status === "APPROVED";
     if (filter === "pending") return status?.status === "PENDING";
     if (filter === "rejected") return status?.status === "REJECTED";
-    if (filter === "needs-drawing") return !status || status.box_count === 0;
+    if (filter === "needs-drawing") return !status || (status.box_count === 0 && !status.is_negative);
     return true;
   }), [filter, searched, statusByImage]);
   const filterCounts = useMemo(() => ({
     all: images.length,
     labeled: images.filter((image) => { const status = statusByImage.get(image.image_id); return !!status && status.box_count > 0 && status.status !== "REJECTED"; }).length,
     approved: images.filter((image) => statusByImage.get(image.image_id)?.status === "APPROVED").length,
+    negative: images.filter((image) => statusByImage.get(image.image_id)?.is_negative).length,
     pending: images.filter((image) => statusByImage.get(image.image_id)?.status === "PENDING").length,
     rejected: images.filter((image) => statusByImage.get(image.image_id)?.status === "REJECTED").length,
     "needs-drawing": images.filter((image) => {
       const status = statusByImage.get(image.image_id);
-      return !status || status.box_count === 0;
+      return !status || (status.box_count === 0 && !status.is_negative);
     }).length,
   }), [images, statusByImage]);
   const visible = filtered.slice(rangeStart, rangeEnd);
@@ -2385,7 +2756,7 @@ function ImageSelectorModal({
       window.cancelAnimationFrame(firstFrame);
       window.cancelAnimationFrame(secondFrame);
     };
-  }, [selectedImageId]);
+  }, [selectedImageId, view]);
 
   useEffect(() => {
     const root = gridRef.current;
@@ -2464,8 +2835,13 @@ function ImageSelectorModal({
   };
 
   return <div className="results-modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>
-    <section className="image-selector-modal" role="dialog" aria-modal="true" aria-label="Select image">
-      <header className="image-manager-header"><div><h3>Select image</h3><p>Labels and model suggestions are shown on each preview.</p></div><button className="icon-button" onClick={onClose} title="Close"><X size={18} /></button></header>
+    <section className={`image-selector-modal${view === "negative" ? " review-mode" : ""}`} role="dialog" aria-modal="true" aria-label={view === "negative" ? "Review no-box images" : "Select image"}>
+      <header className="image-manager-header">
+        {view === "negative" && <button className="icon-button" onClick={() => setView("browse")} title="Back to images" aria-label="Back to images"><ArrowLeft size={18} /></button>}
+        <div><h3>{view === "negative" ? "Review no-box images" : "Select image"}</h3><p>{view === "negative" ? "Inspect each image before confirming it contains no objects." : "Choose an image or review model results with no boxes."}</p></div>
+        <button className="icon-button" onClick={onClose} title="Close"><X size={18} /></button>
+      </header>
+      {view === "browse" ? <>
       <div className="image-selector-toolbar">
         <div className="image-selector-search-field">
           <input value={search} onChange={(event) => updateSearch(event.target.value)} placeholder="Image # (e.g. 29) or filename" aria-label="Search by exact image number or filename" />
@@ -2473,6 +2849,7 @@ function ImageSelectorModal({
         </div>
         <div className="image-selector-toolbar-meta">
           <span>{filtered.length} images</span>
+          {!selectingMultiple && noBoxReviewCount > 0 && <button className="image-selector-negative-action" onClick={() => setView("negative")} disabled={busy} type="button"><CircleDot size={16} /> Review no-box <strong>{noBoxReviewCount}</strong></button>}
           {pendingImageIds.size > 0 && (
             <button className={selectingMultiple ? "active" : ""} onClick={selectingMultiple ? stopMultipleSelection : startMultipleSelection} disabled={busy} type="button">
               <Check size={16} /> {selectingMultiple ? "Done selecting" : "Select multiple"}
@@ -2483,6 +2860,7 @@ function ImageSelectorModal({
       <div className="image-selector-filters" aria-label="Filter images">
         {([
           ["all", "All"], ["labeled", "Has labels"], ["needs-drawing", "Needs drawing"],
+          ["negative", "Verified negative"],
           ["approved", "Accepted"],
           ["pending", "Pending"], ["rejected", "Denied"],
         ] as const).map(([value, label]) => <button className={filter === value ? "active" : ""} onClick={() => updateFilter(value)} type="button" key={value}><span>{label}</span><strong>{filterCounts[value]}</strong></button>)}
@@ -2504,14 +2882,14 @@ function ImageSelectorModal({
           const annotationStatus = statusByImage.get(image.image_id);
           const displayStatus = annotationStatus?.status ?? "UNLABELED";
           const hasLabels = (annotationStatus?.box_count ?? 0) > 0;
-          const statusText = displayStatus === "REJECTED"
+          const statusText = annotationStatus?.is_negative ? "Verified negative" : displayStatus === "REJECTED"
             ? "Denied"
             : !hasLabels
               ? "Needs drawing"
               : displayStatus === "APPROVED"
                 ? `Accepted · ${annotationStatus?.box_count ?? 0}`
                 : `Pending · ${annotationStatus?.box_count ?? 0}`;
-          const statusClass = displayStatus === "REJECTED" ? "rejected" : hasLabels ? displayStatus.toLowerCase() : "needs-drawing";
+          const statusClass = annotationStatus?.is_negative ? "negative" : displayStatus === "REJECTED" ? "rejected" : hasLabels ? displayStatus.toLowerCase() : "needs-drawing";
           const frame = getImageFrameForDimensions(image.width ?? 1, image.height ?? 1, 240 / 150);
           const tagNames = [...new Set(preview?.annotations.map((box) => classNames[box.class_id] ?? `Class ${box.class_id}`) ?? [])];
           const selected = image.image_id === selectedImageId;
@@ -2528,7 +2906,7 @@ function ImageSelectorModal({
           >
             {!selectingMultiple && selected && <span className="image-card-selected"><Check size={14} /> Current image</span>}
             {selectingMultiple && bulkSelected && <span className="image-card-selected"><Check size={14} /> Selected</span>}
-            <span className={`image-card-label-state ${hasLabels ? "labeled" : "drawing"}`}>{hasLabels ? "Labeled" : "Needs drawing"}</span>
+            <span className={`image-card-label-state ${hasLabels ? "labeled" : "drawing"}`}>{annotationStatus?.is_negative ? "Negative" : hasLabels ? "Labeled" : "Needs drawing"}</span>
             <ImageSelectorPreview image={image} alt={image.original_filename ?? `Image ${globalIndex}`} preview={preview} frame={frame} classColors={classColors} classNames={classNames} showTags />
             <div><strong>#{globalIndex} {image.original_filename ?? `image-${globalIndex}`}</strong><span className={statusClass}>{pendingImageIds.has(image.image_id) && hasLabels ? `Pending · ${annotationStatus?.box_count ?? 0}` : statusText}</span>{tagNames.length > 0 && <small className="image-selector-card-tags" title={tagNames.join(", ")}>Tags: {tagNames.join(", ")}</small>}</div>
           </button>;
@@ -2556,6 +2934,7 @@ function ImageSelectorModal({
           <button className="danger-button" onClick={onRejectAll} disabled={busy}><Trash2 size={16} /> Reject all ({pendingImageIds.size})</button>
         </div>}
       </footer>
+      </> : <NegativeReviewContent images={images} annotationStatuses={annotationStatuses} busy={busy} onConfirm={onConfirmNegative} onDraw={onDrawNegative} onBack={() => setView("browse")} />}
     </section>
   </div>;
 }
@@ -2873,7 +3252,7 @@ function TrainingSetupModal({
                 <optgroup label="Fine-tune an existing model">
                   {[...models].reverse().map((model) => (
                     <option value={`model:${model.model_id}`} key={model.model_id}>
-                      Model v{model.version} · mAP50 {formatMetric(model.map50)}
+                      Model v{model.version} · {model.source_type === "IMPORTED" ? "Imported" : `mAP50 ${formatMetric(model.map50)}`}
                     </option>
                   ))}
                 </optgroup>
@@ -3420,7 +3799,7 @@ function ModelTestWorkspace({
               {poseProject && <option value="pose-pretrained">YOLO26 Pose pretrained (base)</option>}
               {[...projectModels].reverse().map((model) => (
                 <option key={model.model_id} value={model.model_id}>
-                  Model v{model.version} · mAP50 {formatMetric(model.map50)}
+                  Model v{model.version} · {model.source_type === "IMPORTED" ? "Imported" : `mAP50 ${formatMetric(model.map50)}`}
                 </option>
               ))}
             </select>
@@ -3513,27 +3892,6 @@ function ModelTestWorkspace({
               <span>{visibleImages.length < filteredTestImages.length ? "Scroll to load more" : `${images.length} images total`}</span>
             </footer>
           </>}
-        {progress.running && (
-          <div className="test-running-overlay" role="status" aria-live="polite">
-            <div className="test-running-panel">
-              <RefreshCw className="test-running-spinner" size={24} />
-              <div className="test-running-heading">
-                <strong>{progress.processed === 0 ? "Loading model" : "Running model test"}</strong>
-                <span>{progress.processed === 0 ? `Preparing to test ${progress.total} images` : `Processing image ${progress.currentFrom} of ${progress.total}`}</span>
-              </div>
-              <div className="test-running-progress-copy">
-                <span>{progress.processed} processed</span>
-                <strong>{progressPercent}%</strong>
-              </div>
-              <progress max={progress.total} value={progress.processed} />
-              <div className="test-running-counts">
-                <span><strong>{detectedImages}</strong> Detected</span>
-                <span><strong>{noDetectionImages}</strong> No detections</span>
-                <span className={failedImages > 0 ? "has-failures" : ""}><strong>{failedImages}</strong> Failed</span>
-              </div>
-            </div>
-          </div>
-        )}
         {isFileDragActive && <div className="test-drop-overlay"><Upload size={28} /><strong>Drop test images here</strong></div>}
       </section>
 
@@ -3659,6 +4017,62 @@ function TestPoseSkeleton({
   );
 }
 
+function NegativeReviewContent({ images, annotationStatuses, busy, onConfirm, onDraw, onBack }: {
+  images: ImageItem[];
+  annotationStatuses: ImageAnnotationStatus[];
+  busy: boolean;
+  onConfirm: (imageId: number) => void;
+  onDraw: (imageId: number) => void;
+  onBack: () => void;
+}) {
+  const candidates = useMemo(() => {
+    const noBoxIds = new Set(annotationStatuses.filter((status) =>
+      status.source_type === "MODEL" && status.status === "APPROVED" && status.box_count === 0 && !status.is_negative
+    ).map((status) => status.image_id));
+    return images.filter((image) => noBoxIds.has(image.image_id));
+  }, [images, annotationStatuses]);
+  const [index, setIndex] = useState(0);
+  const image = candidates[Math.min(index, Math.max(0, candidates.length - 1))] ?? null;
+  const imageNumber = image ? images.findIndex((item) => item.image_id === image.image_id) + 1 : 0;
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (busy) return;
+      if (event.key === "Escape") onBack();
+      if (event.key === "ArrowLeft") {
+        event.preventDefault();
+        setIndex((current) => Math.max(0, current - 1));
+      }
+      if (event.key === "ArrowRight" && candidates.length > 0) {
+        event.preventDefault();
+        setIndex((current) => Math.min(candidates.length - 1, current + 1));
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [busy, candidates.length, onBack]);
+
+  return <div className="image-selector-review-view">
+      <div className="negative-review-main">
+        {image ? <>
+          <div className="negative-review-stage"><ProtectedImage key={image.image_id} image={image} alt={image.original_filename ?? `Image ${imageNumber}`} loading="eager" /></div>
+          <aside className="negative-review-details">
+            <span className="negative-review-kicker">NEEDS HUMAN REVIEW</span>
+            <h4>Image #{imageNumber}</h4>
+            <p title={image.original_filename ?? ""}>{image.original_filename ?? `image-${imageNumber}`}</p>
+            <div className="negative-review-note"><CircleAlert size={18} /><span>No detection does not mean this image is negative. If an object is visible, draw its box instead.</span></div>
+            <button className="primary" type="button" onClick={() => onConfirm(image.image_id)} disabled={busy}><Check size={16} /> Confirm no objects</button>
+            <button type="button" onClick={() => onDraw(image.image_id)} disabled={busy}><Pencil size={16} /> Object visible · draw label</button>
+          </aside>
+        </> : <div className="negative-review-done"><Check size={30} /><strong>No images waiting for negative review</strong><span>Verified negatives can now be selected when you create a dataset version.</span></div>}
+      </div>
+      <footer className="negative-review-footer">
+        <span>{candidates.length} no-box {candidates.length === 1 ? "image" : "images"} awaiting review{image ? ` · ${Math.min(index + 1, candidates.length)} of ${candidates.length}` : ""}</span>
+        <div><button type="button" onClick={() => setIndex((current) => Math.max(0, current - 1))} disabled={index === 0 || busy}><ChevronLeft size={16} /> Previous</button><button type="button" onClick={() => setIndex((current) => Math.min(candidates.length - 1, current + 1))} disabled={index >= candidates.length - 1 || busy}>Next <ChevronRight size={16} /></button></div>
+      </footer>
+  </div>;
+}
+
 function DatasetSelectionModal({
   images, classColors, annotationStatuses, busy, onClose, onCreate,
 }: {
@@ -3671,7 +4085,7 @@ function DatasetSelectionModal({
 }) {
   const candidates = useMemo(() => {
     const approved = new Map(annotationStatuses
-      .filter((status) => status.status === "APPROVED" && status.box_count > 0)
+      .filter((status) => status.status === "APPROVED" && (status.box_count > 0 || status.is_negative))
       .map((status) => [status.image_id, status]));
     return images.flatMap((image) => {
       const status = approved.get(image.image_id);
@@ -3680,20 +4094,21 @@ function DatasetSelectionModal({
   }, [images, annotationStatuses]);
   const [selectedIds, setSelectedIds] = useState(() => new Set(candidates.map(({ image }) => image.image_id)));
   const [search, setSearch] = useState("");
-  const [filter, setFilter] = useState<"all" | "manual" | "model">("all");
+  const [filter, setFilter] = useState<"all" | "manual" | "model" | "negative">("all");
   const [sampleSize, setSampleSize] = useState(200);
   const [visibleCount, setVisibleCount] = useState(24);
   const gridRef = useRef<HTMLDivElement | null>(null);
   const loadMoreRef = useRef<HTMLDivElement | null>(null);
-  const manualCandidates = candidates.filter(({ status }) => status.source_type !== "MODEL");
-  const modelCandidates = candidates.filter(({ status }) => status.source_type === "MODEL");
+  const manualCandidates = candidates.filter(({ status }) => status.source_type !== "MODEL" && !status.is_negative);
+  const modelCandidates = candidates.filter(({ status }) => status.source_type === "MODEL" && !status.is_negative);
   const filtered = candidates.filter(({ image, status }) => (
-    (filter === "all" || (filter === "manual" ? status.source_type !== "MODEL" : status.source_type === "MODEL"))
+    (filter === "all" || (filter === "negative" ? status.is_negative : filter === "manual" ? status.source_type !== "MODEL" && !status.is_negative : status.source_type === "MODEL" && !status.is_negative))
     && (image.original_filename ?? String(image.image_id)).toLowerCase().includes(search.toLowerCase())
   ));
   const visible = filtered.slice(0, visibleCount);
   const selected = candidates.filter(({ image }) => selectedIds.has(image.image_id));
-  const selectedManualCount = selected.filter(({ status }) => status.source_type !== "MODEL").length;
+  const selectedManualCount = selected.filter(({ status }) => status.source_type !== "MODEL" && !status.is_negative).length;
+  const selectedNegativeCount = selected.filter(({ status }) => status.is_negative).length;
   const allShownSelected = visible.length > 0 && visible.every(({ image }) => selectedIds.has(image.image_id));
 
   useEffect(() => {
@@ -3741,7 +4156,7 @@ function DatasetSelectionModal({
   }}>
     <section className="dataset-selection-modal" role="dialog" aria-modal="true" aria-labelledby="dataset-selection-title">
       <header className="results-modal-header">
-        <div><h3 id="dataset-selection-title">Create dataset version</h3><p>{candidates.length} images with approved labels</p></div>
+        <div><h3 id="dataset-selection-title">Create dataset version</h3><p>{candidates.length} images with approved labels or verified negatives</p></div>
         <button className="icon-button" onClick={onClose} disabled={busy} title="Close"><X size={18} /></button>
       </header>
       <div className="dataset-selection-tools">
@@ -3755,7 +4170,7 @@ function DatasetSelectionModal({
         <div className="dataset-selection-filters">
           <input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search images" aria-label="Search dataset images" />
           <div className="dataset-source-tabs" aria-label="Label source">
-            {(["all", "manual", "model"] as const).map((value) => <button type="button" aria-pressed={filter === value} className={filter === value ? "active" : ""} onClick={() => setFilter(value)} key={value}>{value === "all" ? "All" : value === "manual" ? "Manual labels" : "Auto labels"}</button>)}
+            {(["all", "manual", "model", "negative"] as const).map((value) => <button type="button" aria-pressed={filter === value} className={filter === value ? "active" : ""} onClick={() => setFilter(value)} key={value}>{value === "all" ? "All" : value === "manual" ? "Manual labels" : value === "model" ? "Auto labels" : "Verified negative"}</button>)}
           </div>
           <label className="dataset-select-shown"><input type="checkbox" checked={allShownSelected} disabled={busy || visible.length === 0} onChange={() => setSelectedIds((current) => {
             const next = new Set(current);
@@ -3767,13 +4182,13 @@ function DatasetSelectionModal({
       <div className="dataset-selection-grid" ref={gridRef}>
         {visible.map(({ image, status }) => <label className={`dataset-image-item${selectedIds.has(image.image_id) ? " selected" : ""}`} key={image.image_id}>
           <div className="dataset-image-preview"><DatasetAnnotationPreview image={image} annotationSetId={status.annotation_set_id} classColors={classColors} /><input type="checkbox" checked={selectedIds.has(image.image_id)} onChange={() => toggleImage(image.image_id)} disabled={busy} aria-label={`Include ${image.original_filename ?? image.image_id}`} /></div>
-          <div className="dataset-image-meta"><strong title={image.original_filename ?? ""}>{image.original_filename ?? `Image ${image.image_id}`}</strong><span>{status.source_type === "MODEL" ? "Auto label" : "Manual label"} · {status.box_count} {status.box_count === 1 ? "box" : "boxes"}</span></div>
+          <div className="dataset-image-meta"><strong title={image.original_filename ?? ""}>{image.original_filename ?? `Image ${image.image_id}`}</strong><span>{status.is_negative ? "Verified negative · 0 boxes" : `${status.source_type === "MODEL" ? "Auto label" : "Manual label"} · ${status.box_count} ${status.box_count === 1 ? "box" : "boxes"}`}</span></div>
         </label>)}
         {filtered.length === 0 && <div className="results-filter-empty">No approved labeled images in this view.</div>}
         {visibleCount < filtered.length && <div className="results-load-more" ref={loadMoreRef}>Loading more images...</div>}
       </div>
       <footer className="results-modal-footer dataset-selection-footer">
-        <span>{selected.length} selected · {selectedManualCount} manual · {selected.length - selectedManualCount} auto</span>
+        <span>{selected.length} selected · {selectedManualCount} manual · {selected.length - selectedManualCount - selectedNegativeCount} auto · {selectedNegativeCount} negative</span>
         <div className="results-modal-actions"><button onClick={onClose} disabled={busy}>Cancel</button><button className="primary" onClick={() => onCreate(selected.map(({ image }) => image.image_id))} disabled={busy || selected.length === 0}><Database size={16} /> {busy ? "Building..." : `Create & Build (${selected.length})`}</button></div>
       </footer>
     </section>
@@ -3837,6 +4252,7 @@ function AutoLabelResultsModal({
   onOpen,
   onAcceptAll,
   onRejectAll,
+  onReviewNegatives,
   busy,
 }: {
   results: AutoLabelResult[];
@@ -3846,6 +4262,7 @@ function AutoLabelResultsModal({
   onOpen: (result: AutoLabelResult) => void;
   onAcceptAll: () => void;
   onRejectAll: () => void;
+  onReviewNegatives: () => void;
   busy: boolean;
 }) {
   const [resultFilter, setResultFilter] = useState<AutoLabelResultFilter>("all");
@@ -3860,6 +4277,7 @@ function AutoLabelResultsModal({
   ).length;
   const failedCount = activeResults.filter((result) => result.status === "FAILED").length;
   const acceptedCount = results.filter(isAccepted).length;
+  const acceptedNoBoxCount = results.filter((result) => isAccepted(result) && (result.annotationSet?.annotations.length ?? 0) === 0).length;
   const pendingCount = results.filter((result) => result.annotationSet?.status === "PENDING").length;
   const filteredResults = results.filter((result) => {
     const boxCount = result.annotationSet?.annotations.length ?? 0;
@@ -3976,6 +4394,7 @@ function AutoLabelResultsModal({
         <footer className="results-modal-footer">
           <span>Select an image to inspect, edit, accept, or reject its predictions.</span>
           <div className="results-modal-actions">
+            {acceptedNoBoxCount > 0 && <button type="button" onClick={onReviewNegatives} disabled={busy}><CircleDot size={16} /> Review no-box images ({acceptedNoBoxCount})</button>}
             <button onClick={onAcceptAll} disabled={pendingCount === 0 || busy}>
               <Check size={16} /> Accept all pending ({pendingCount})
             </button>

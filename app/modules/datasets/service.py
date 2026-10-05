@@ -28,10 +28,10 @@ class DatasetService:
             if set(data.image_ids) != available_ids:
                 raise HTTPException(
                     status_code=400,
-                    detail="Selected images must be active images in this project with approved labels",
+                    detail="Selected images must have approved labels or a verified negative review",
                 )
         if not annotation_sets:
-            raise HTTPException(status_code=400, detail="No approved annotations with labels found")
+            raise HTTPException(status_code=400, detail="No approved labels or verified negatives found")
 
         version_number = self.repository.next_version_number(data.project_id)
         dataset_version = self.repository.create_version(

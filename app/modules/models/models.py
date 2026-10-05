@@ -1,7 +1,17 @@
 from datetime import datetime
 from typing import TYPE_CHECKING
 
-from sqlalchemy import DateTime, Float, ForeignKey, Index, Integer, String, UniqueConstraint, func
+from sqlalchemy import (
+    JSON,
+    DateTime,
+    Float,
+    ForeignKey,
+    Index,
+    Integer,
+    String,
+    UniqueConstraint,
+    func,
+)
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.core.database.session import Base
@@ -24,8 +34,12 @@ class Model(Base):
     model_id: Mapped[int] = mapped_column(PrimaryKeyInt, primary_key=True, autoincrement=True)
     project_id: Mapped[int] = mapped_column(ForeignKey("projects.project_id"), nullable=False)
     training_run_id: Mapped[int] = mapped_column(
-        ForeignKey("training_runs.training_run_id"), nullable=False
+        ForeignKey("training_runs.training_run_id"), nullable=True
     )
+    uploaded_by_user_id: Mapped[int | None] = mapped_column(ForeignKey("users.user_id"))
+    source_type: Mapped[str] = mapped_column(String, nullable=False, default="TRAINED", server_default="TRAINED")
+    model_type: Mapped[str] = mapped_column(String, nullable=False)
+    class_names: Mapped[list[str] | None] = mapped_column(JSON)
     version: Mapped[int] = mapped_column(Integer, nullable=False)
     weights_object_key: Mapped[str] = mapped_column(String, nullable=False)
     precision: Mapped[float | None] = mapped_column(Float)

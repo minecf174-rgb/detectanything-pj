@@ -77,6 +77,7 @@ class AnnotationRepository:
             source_model_id=source.source_model_id,
             parent_annotation_set_id=source.annotation_set_id,
             status="APPROVED",
+            is_negative=source.is_negative and not data.annotations,
             created_by=reviewed_by,
             reviewed_by=reviewed_by,
             reviewed_at=reviewed_at,

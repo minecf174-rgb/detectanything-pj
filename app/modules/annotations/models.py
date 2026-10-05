@@ -1,7 +1,7 @@
 from datetime import datetime
 from typing import TYPE_CHECKING
 
-from sqlalchemy import DateTime, Float, ForeignKey, Index, Integer, String, UniqueConstraint, func
+from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Index, Integer, String, UniqueConstraint, false, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.core.database.session import Base
@@ -34,6 +34,7 @@ class AnnotationSet(Base):
         ForeignKey("annotation_sets.annotation_set_id")
     )
     status: Mapped[str] = mapped_column(String, nullable=False)
+    is_negative: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default=false())
     created_by: Mapped[int | None] = mapped_column(ForeignKey("users.user_id"))
     reviewed_by: Mapped[int | None] = mapped_column(ForeignKey("users.user_id"))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

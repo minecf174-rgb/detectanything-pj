@@ -2,6 +2,8 @@
 
 เว็บจัดการภาพและ annotation สำหรับ Object Detection / Pose Estimation พร้อมสร้าง dataset version, เทรน YOLO, ทดสอบโมเดล และตรวจผล auto-label
 
+คีย์ลัดหน้า Annotate: ดู [frontend/shortcut-key.md](frontend/shortcut-key.md)
+
 ## เตรียมเครื่องใหม่
 
 คู่มือนี้เป็นการเริ่มด้วย **ฐานข้อมูลเปล่า** หลัง clone: ผู้ใช้ โปรเจกต์ รูป annotation dataset version และโมเดลที่เคยเทรน **จะไม่ตามมาด้วย** เพราะไฟล์เหล่านี้ไม่อยู่ใน Git
@@ -112,6 +114,16 @@ npm run dev
 
 เปิดเว็บที่ <http://127.0.0.1:5173> และ API docs ที่ <http://127.0.0.1:8000/docs> เครื่องใหม่ให้สร้าง account และ project ใหม่ในเว็บ
 
+### นำเข้าโมเดลจากภายนอก
+
+เปิดโปรเจกต์ที่ต้องการ แล้วไปที่ **Models → Import model** (แยกจากหน้า Download) เลือกไฟล์ Ultralytics YOLO `.pt` ขนาดไม่เกิน 200 MB ระบบจะตรวจว่าเป็น Detect หรือ Pose ให้ตรงกับชนิดโปรเจกต์ อ่านชื่อคลาสจากไฟล์ และเพิ่มคลาสที่ยังไม่มีในโปรเจกต์ให้อัตโนมัติ หลังนำเข้า โมเดลจะปรากฏในหน้า Test, Auto Label, Training setup และ Download ของ **โปรเจกต์นั้นเท่านั้น**
+
+ถ้าโปรเจกต์มีคลาส index เดียวกันแต่ชื่อไม่ตรงกับโมเดล ระบบจะปฏิเสธการนำเข้าโดยไม่แก้หรือเขียนทับคลาส/annotation เดิม ให้ใช้โปรเจกต์ใหม่หรือจัดคลาสให้ตรงก่อน คลาสที่โมเดลนำเข้าใช้อยู่จะเปลี่ยนชื่อหรือลบไม่ได้จนกว่าจะลบโมเดลนั้น โปรเจกต์ Pose รองรับโมเดล 17 keypoints เท่านั้น ข้อมูลโมเดลถูกบันทึกในฐานข้อมูลพร้อม `project_id`, ผู้ที่อัปโหลด, ชนิดงาน และชื่อคลาส; ไฟล์ weights อยู่ใน `storage/models/` จึงต้องย้าย **ฐานข้อมูลและ storage พร้อมกัน** เมื่อต้องการย้ายเครื่อง
+
+นำเข้าเฉพาะ `.pt` จากแหล่งที่เชื่อถือได้: ระบบอ่าน checkpoint ด้วย safe loading แล้วบันทึกไฟล์ที่สร้างใหม่จากโมเดลที่ผ่านการตรวจ แต่ไฟล์ PyTorch/Ultralytics ไม่ควรถูกถือว่าปลอดภัยโดยอาศัยนามสกุลไฟล์อย่างเดียว
+
+หลังดึงโค้ดนี้ไปเครื่องอื่น ให้รัน `python -m pip install -e ".[dev]"` และ `alembic upgrade head` จาก root โปรเจกต์ก่อนเปิด backend เพื่อให้เวอร์ชัน Ultralytics รองรับ safe loading และฐานข้อมูลมี schema นำเข้าโมเดล
+
 ครั้งถัดไปใช้แค่สอง terminal ด้านบน ไม่ต้องติดตั้ง dependencies หรือดาวน์โหลด weights ซ้ำ `alembic upgrade head` รันซ้ำได้และควรรันหลังดึงโค้ดที่มี migration ใหม่
 
 Frontend เรียก API ผ่าน path `/api` ที่ origin เดียวกันโดยค่าเริ่มต้น แล้ว Vite proxy ส่งต่อไปยัง backend ที่ `http://127.0.0.1:8000` วิธีนี้ทำให้ทั้งการใช้งาน local และการเปิด tunnel เฉพาะ Frontend ใช้ค่า API เดียวกันได้ Backend และ Frontend อ่านค่าจาก root `.env` ไฟล์เดียวกัน
@@ -133,6 +145,15 @@ kill -TERM 12345
 ```
 
 เช็กพอร์ตเดิมอีกครั้งด้วยคำสั่ง `lsof` ด้านบน ถ้าไม่แสดง process ที่ `LISTEN` แล้วจึงเปิด server ใหม่ หากมีหลาย `PID` ให้ตรวจและหยุดเฉพาะ process ที่ต้องการทีละตัว
+
+### ตรวจรูป Negative หลัง Auto-label
+
+ปุ่ม **Accept all** ยังอนุมัติผล Auto-label ทั้งชุดตามเดิม แต่รูปที่โมเดลไม่เจอกรอบจะ **ยังไม่ถูกใส่ใน dataset** โดยอัตโนมัติ เพราะอาจมีวัตถุที่โมเดลพลาด หลัง Accept all ให้กด **Review no-box** จากหน้าต่าง **Select image** (หรือจากหน้าผล Auto-label) แล้วเปิดดูภาพใหญ่ทีละรูปในหน้าต่างเดียวกัน:
+
+- ถ้าไม่มีวัตถุจริง กด **Confirm no objects** เพื่อบันทึกเป็น verified negative
+- ถ้ามีวัตถุ กด **Object visible · draw label** แล้วลากกรอบตามปกติ
+
+ตอนสร้าง Dataset version จะเลือกได้ทั้งรูปที่มี approved labels และ verified negatives โดยรูป Negative จะมีไฟล์ YOLO label ว่าง (`.txt`) ส่วนรูปที่ไม่มีกรอบแต่ยังไม่ยืนยันจะไม่เข้า dataset หลังดึงโค้ดรุ่นที่มีฟีเจอร์นี้ ให้รัน `alembic upgrade head` ก่อนเปิด Backend เพื่อเพิ่มคอลัมน์สถานะใหม่ โดยไม่ลบข้อมูลเดิม
 
 Vite ตั้ง `strictPort: true` จึงไม่ย้ายจาก 5173 ไป 5174 เอง
 
@@ -273,7 +294,7 @@ tar -czf "backups/detect-anything-data-$(date +%Y%m%d-%H%M%S).tar.gz" \
 
 - `cv_platform.sqlite3`: account, project, class, annotation, dataset version, training run และ model records
 - `storage/projects/`: รูปต้นฉบับของแต่ละโปรเจกต์
-- `storage/models/`: weights ของโมเดลที่เทรนสำเร็จ
+- `storage/models/`: weights ของโมเดลที่เทรนสำเร็จหรืออัปโหลดเข้าโปรเจกต์
 
 ไม่ต้องใส่ pretrained weights เช่น `yolo26n-pose.pt` เพราะดาวน์โหลดใหม่ตามขั้นตอนด้านบนได้ และไม่ต้องใส่ `temp/` สำหรับงานที่เทรนเสร็จแล้ว
 

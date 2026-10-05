@@ -1,15 +1,17 @@
 import json
 from typing import Literal
 
-from fastapi import APIRouter, Depends, File, Query, Response, UploadFile
+from fastapi import APIRouter, Depends, File, HTTPException, Query, Response, UploadFile
 from fastapi.responses import FileResponse, StreamingResponse
 from sqlalchemy.orm import Session
 
+from app.core.authz import require_project_owner
 from app.core.database.session import get_db
 from app.modules.auth.dependencies import get_current_user
 from app.modules.models.schemas import (
     ModelBatchPredictionRead,
     ModelDetailRead,
+    ModelImportRead,
     ModelPredictionRead,
     ModelRead,
 )
@@ -17,6 +19,20 @@ from app.modules.models.service import ModelService
 from app.modules.projects.models import User
 
 router = APIRouter()
+
+
+@router.post("/import", response_model=ModelImportRead, status_code=201)
+def import_model(
+    project_id: int = Query(..., ge=1),
+    file: UploadFile = File(...),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    require_project_owner(db, current_user, project_id)
+    if not (file.filename or "").lower().endswith(".pt"):
+        raise HTTPException(status_code=400, detail="Choose an Ultralytics YOLO .pt weights file")
+    data = file.file.read(200 * 1024 * 1024 + 1)
+    return ModelService(db).import_model(project_id, data, file.filename, current_user)
 
 
 def _ndjson_response(events) -> StreamingResponse:

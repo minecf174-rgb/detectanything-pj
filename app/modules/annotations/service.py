@@ -59,6 +59,7 @@ class AnnotationService:
                 AnnotationSet.annotation_set_id,
                 AnnotationSet.source_type,
                 AnnotationSet.status,
+                AnnotationSet.is_negative,
                 AnnotationSet.revision,
                 func.count(Annotation.annotation_id).label("box_count"),
             )
@@ -69,7 +70,7 @@ class AnnotationService:
             .order_by(AnnotationSet.image_id, AnnotationSet.revision.desc())
         )
         latest_by_image: dict[int, dict] = {}
-        for image_id, annotation_set_id, source_type, status, _revision, box_count in rows:
+        for image_id, annotation_set_id, source_type, status, is_negative, _revision, box_count in rows:
             if image_id not in latest_by_image:
                 latest_by_image[image_id] = {
                     "image_id": image_id,
@@ -77,8 +78,45 @@ class AnnotationService:
                     "source_type": source_type,
                     "status": status,
                     "box_count": box_count,
+                    "is_negative": is_negative,
                 }
         return list(latest_by_image.values())
+
+    def confirm_negative_image(self, image_id: int, current_user: User):
+        image = self.db.get(Image, image_id)
+        if image is None or image.status == "ARCHIVED":
+            raise HTTPException(status_code=404, detail="Active image not found")
+        require_project_owner(self.db, current_user, image.project_id)
+        latest = self.db.scalar(
+            select(AnnotationSet)
+            .where(AnnotationSet.image_id == image_id)
+            .order_by(AnnotationSet.revision.desc())
+            .limit(1)
+        )
+        if latest is not None and self.db.scalar(
+            select(Annotation.annotation_id)
+            .where(Annotation.annotation_set_id == latest.annotation_set_id)
+            .limit(1)
+        ) is not None:
+            raise HTTPException(
+                status_code=409,
+                detail="Image has boxes; review and remove them before confirming negative",
+            )
+        if latest is not None and latest.is_negative:
+            return self.repository.get_set(latest.annotation_set_id)
+        if latest is not None and latest.status == "PENDING":
+            latest.status = "REJECTED"
+            latest.reviewed_by = current_user.user_id
+            latest.reviewed_at = datetime.now(timezone.utc)
+            AutoLabelRepository(self.db).mark_item_reviewed_by_annotation_set(latest.annotation_set_id)
+        negative = self.repository.create_set(
+            image_id, self.repository.next_revision(image_id), AnnotationSetCreate(annotations=[]), current_user.user_id
+        )
+        negative.is_negative = True
+        negative.reviewed_by = current_user.user_id
+        negative.reviewed_at = datetime.now(timezone.utc)
+        self.db.commit()
+        return self.repository.get_set(negative.annotation_set_id)
 
     def accept_annotation_set(
         self, annotation_set_id: int, data: AnnotationReviewRequest, current_user: User

@@ -3,6 +3,7 @@ from pathlib import Path
 from shutil import rmtree
 
 from fastapi import HTTPException
+from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -12,7 +13,9 @@ from app.core.storage.service import LocalStorageService
 from app.ml.dataset_builder.yolo import YoloDatasetBuilder
 from app.ml.trainers.mock import MockYoloTrainer
 from app.ml.trainers.ultralytics_yolo import UltralyticsYoloTrainer
+from app.modules.classes.models import LabelClass
 from app.modules.datasets.models import DatasetVersion
+from app.modules.models.class_mapping import model_class_mapping
 from app.modules.models.models import Model
 from app.modules.projects.models import User
 from app.modules.training.models import TrainingRun
@@ -53,8 +56,15 @@ class TrainingService:
                 raise HTTPException(status_code=404, detail="Source model not found")
             if source_model.project_id != data.project_id:
                 raise HTTPException(status_code=400, detail="Source model belongs to another project")
-            if source_model.training_run.model_type != data.model_type:
+            if source_model.model_type != data.model_type:
                 raise HTTPException(status_code=400, detail="Source model task does not match the project")
+            if source_model.source_type == "IMPORTED":
+                project_classes = list(self.db.scalars(
+                    select(LabelClass).where(LabelClass.project_id == data.project_id)
+                ))
+                mapping = model_class_mapping(source_model, project_classes)
+                if any(index != label_class.class_index for index, label_class in mapping.items()):
+                    raise HTTPException(status_code=409, detail="Project class indexes no longer match the imported model")
             if not self.storage.exists(source_model.weights_object_key):
                 raise HTTPException(status_code=404, detail="Source model weights file not found")
 

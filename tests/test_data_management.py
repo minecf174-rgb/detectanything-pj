@@ -221,6 +221,7 @@ def test_unused_dataset_version_can_be_deleted():
         "source_type": "HUMAN",
         "status": "APPROVED",
         "box_count": 1,
+        "is_negative": False,
     }]
     version = client.post(
         "/datasets/versions",
@@ -320,6 +321,60 @@ def test_dataset_version_excludes_approved_images_without_labels():
     assert subset.status_code == 200, subset.text
     assert [item["image_id"] for item in subset.json()["items"]] == [empty_image["image_id"]]
     assert subset.json()["items"][0]["annotation_set_id"] == added_label.json()["annotation_set_id"]
+    cannot_mark_labeled_negative = client.post(
+        f"/annotations/images/{empty_image['image_id']}/confirm-negative", headers=headers,
+    )
+    assert cannot_mark_labeled_negative.status_code == 409
+
+
+def test_verified_negative_enters_dataset_with_empty_yolo_label():
+    headers = _register("verified-negative")
+    project = client.post(
+        "/projects", headers=headers,
+        json={"name": "Verified negatives", "task_type": "OBJECT_DETECTION"},
+    ).json()
+    client.post(
+        "/classes", headers=headers,
+        json={"project_id": project["project_id"], "name": "object", "class_index": 0, "color": "#16a34a"},
+    )
+    image = client.post(
+        f"/images/upload?project_id={project['project_id']}", headers=headers,
+        files={"file": ("background.png", _png_bytes(), "image/png")},
+    ).json()
+    image_id = image["image_id"]
+    unverified = client.post(
+        f"/annotations/images/{image_id}/annotation-sets", headers=headers,
+        json={"annotations": []},
+    )
+    assert unverified.status_code == 200, unverified.text
+    assert unverified.json()["is_negative"] is False
+    excluded = client.post(
+        "/datasets/versions", headers=headers,
+        json={"project_id": project["project_id"], "default_split": "TRAIN"},
+    )
+    assert excluded.status_code == 400, excluded.text
+
+    confirmed = client.post(f"/annotations/images/{image_id}/confirm-negative", headers=headers)
+    assert confirmed.status_code == 200, confirmed.text
+    assert confirmed.json()["is_negative"] is True
+    assert confirmed.json()["annotations"] == []
+    confirmed_again = client.post(f"/annotations/images/{image_id}/confirm-negative", headers=headers)
+    assert confirmed_again.json()["annotation_set_id"] == confirmed.json()["annotation_set_id"]
+    statuses = client.get(f"/annotations/projects/{project['project_id']}/image-statuses", headers=headers)
+    assert statuses.json()[0]["is_negative"] is True
+
+    version = client.post(
+        "/datasets/versions", headers=headers,
+        json={"project_id": project["project_id"], "image_ids": [image_id], "default_split": "TRAIN"},
+    )
+    assert version.status_code == 200, version.text
+    assert version.json()["items"][0]["annotation_set_id"] == confirmed.json()["annotation_set_id"]
+    export = client.get(f"/datasets/versions/{version.json()['version_id']}/export-yolo/download", headers=headers)
+    assert export.status_code == 200, export.text
+    with ZipFile(BytesIO(export.content)) as archive:
+        label_files = [name for name in archive.namelist() if name.startswith("labels/") and name.endswith(".txt")]
+        assert len(label_files) == 1
+        assert archive.read(label_files[0]) == b""
 
 
 def test_class_name_and_color_can_be_updated_without_changing_index():

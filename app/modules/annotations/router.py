@@ -47,6 +47,15 @@ def list_image_annotation_sets(
     return AnnotationService(db).list_image_annotation_sets(image_id, current_user)
 
 
+@router.post("/images/{image_id}/confirm-negative", response_model=AnnotationSetRead)
+def confirm_negative_image(
+    image_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    return AnnotationService(db).confirm_negative_image(image_id, current_user)
+
+
 @router.post("/sets/{annotation_set_id}/accept", response_model=AnnotationSetRead)
 def accept_annotation_set(
     annotation_set_id: int,

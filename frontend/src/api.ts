@@ -100,6 +100,7 @@ export type AnnotationSet = {
   source_model_id: number | null;
   parent_annotation_set_id: number | null;
   status: string;
+  is_negative: boolean;
   created_by: number | null;
   reviewed_by: number | null;
   created_at: string;
@@ -113,6 +114,7 @@ export type ImageAnnotationStatus = {
   source_type: "HUMAN" | "MODEL" | "HUMAN_CORRECTED";
   status: "PENDING" | "APPROVED" | "REJECTED";
   box_count: number;
+  is_negative: boolean;
 };
 
 export type DatasetVersion = {
@@ -149,7 +151,11 @@ export type TrainingRun = {
 export type ModelItem = {
   model_id: number;
   project_id: number;
-  training_run_id: number;
+  training_run_id: number | null;
+  uploaded_by_user_id: number | null;
+  source_type: "TRAINED" | "IMPORTED";
+  model_type: string;
+  class_names: string[] | null;
   version: number;
   weights_object_key: string;
   precision: number | null;
@@ -158,6 +164,8 @@ export type ModelItem = {
   map50_95: number | null;
   created_at: string;
 };
+
+export type ModelImportResult = { model: ModelItem; created_classes: string[] };
 
 export type ModelPredictionBox = {
   class_id: number;
@@ -577,6 +585,7 @@ export const api = {
   },
   listAnnotations: (imageId: number) => request<AnnotationSet[]>(`/annotations/images/${imageId}/annotation-sets`),
   listImageAnnotationStatuses: (projectId: number) => request<ImageAnnotationStatus[]>(`/annotations/projects/${projectId}/image-statuses`),
+  confirmNegative: (imageId: number) => request<AnnotationSet>(`/annotations/images/${imageId}/confirm-negative`, { method: "POST" }),
   createAnnotationSet: (imageId: number, payload: unknown) => request<AnnotationSet>(`/annotations/images/${imageId}/annotation-sets`, {
     method: "POST",
     body: JSON.stringify(payload),
@@ -631,6 +640,11 @@ export const api = {
     method: "POST",
   }),
   listModels: (projectId: number) => request<ModelItem[]>(`/models/project/${projectId}`),
+  importModel: (projectId: number, file: File) => {
+    const form = new FormData();
+    form.append("file", file);
+    return request<ModelImportResult>(`/models/import?project_id=${projectId}`, { method: "POST", body: form });
+  },
   deleteModel: (modelId: number) => request<void>(`/models/${modelId}`, {
     method: "DELETE",
   }),

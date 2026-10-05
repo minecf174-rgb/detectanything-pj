@@ -40,7 +40,7 @@ class DatasetRepository:
                 .order_by(AnnotationSet.revision.desc())
                 .limit(1)
             )
-            if annotation_set is not None and annotation_set.annotations:
+            if annotation_set is not None and (annotation_set.annotations or annotation_set.is_negative):
                 selected.append(annotation_set)
         return selected
 

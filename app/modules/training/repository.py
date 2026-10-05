@@ -63,6 +63,8 @@ class TrainingRepository:
         model = Model(
             project_id=project_id,
             training_run_id=training_run_id,
+            source_type="TRAINED",
+            model_type=self.db.get(TrainingRun, training_run_id).model_type,
             version=version,
             weights_object_key=weights_object_key,
             precision=metrics.get("precision"),
