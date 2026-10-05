@@ -2,8 +2,8 @@
 
 set -euo pipefail
 
-TORCH_VERSION="2.5.1"
-TORCHVISION_VERSION="0.20.1"
+TORCH_VERSION="2.6.0"
+TORCHVISION_VERSION="0.21.0"
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
@@ -122,6 +122,7 @@ import numpy
 import fastapi
 import sqlalchemy
 import ultralytics
+from ultralytics.nn.tasks import _SafeLoad
 import sam2
 import segment_anything
 
@@ -136,8 +137,12 @@ print("NumPy:", numpy.__version__)
 print("FastAPI:", fastapi.__version__)
 print("SQLAlchemy:", sqlalchemy.__version__)
 print("Ultralytics:", ultralytics.__version__)
+print("Safe model loading:", _SafeLoad.SUPPORTED)
 print("SAM2: OK")
 print("SAM1: OK")
+
+if not _SafeLoad.SUPPORTED:
+    raise SystemExit("ERROR: Safe YOLO model loading is unavailable. PyTorch 2.6+ is required.")
 PY
 
 echo

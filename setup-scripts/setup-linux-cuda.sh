@@ -2,14 +2,14 @@
 
 set -euo pipefail
 
-TORCH_VERSION="2.5.1"
-TORCHVISION_VERSION="0.20.1"
+TORCH_VERSION="2.6.0"
+TORCHVISION_VERSION="0.21.0"
 
 # Default PyTorch CUDA build.
 #
 # Can override when running:
 #
-# PYTORCH_CUDA=cu121 bash scripts/setup-linux-cuda.sh
+# PYTORCH_CUDA=cu126 bash setup-scripts/setup-linux-cuda.sh
 #
 PYTORCH_CUDA="${PYTORCH_CUDA:-cu124}"
 
@@ -50,17 +50,17 @@ nvidia-smi --query-gpu=name,driver_version --format=csv,noheader
 # --------------------------------------------------
 
 case "$PYTORCH_CUDA" in
-    cu118|cu121|cu124)
+    cu118|cu124|cu126)
         ;;
     *)
         echo
         echo "ERROR: Unsupported PyTorch CUDA build:"
         echo "$PYTORCH_CUDA"
         echo
-        echo "Available for PyTorch 2.5.1:"
+        echo "Available for PyTorch 2.6.0:"
         echo "  cu118"
-        echo "  cu121"
         echo "  cu124"
+        echo "  cu126"
         exit 1
         ;;
 esac
@@ -198,6 +198,7 @@ import numpy
 import fastapi
 import sqlalchemy
 import ultralytics
+from ultralytics.nn.tasks import _SafeLoad
 import sam2
 import segment_anything
 
@@ -224,8 +225,12 @@ print("NumPy:", numpy.__version__)
 print("FastAPI:", fastapi.__version__)
 print("SQLAlchemy:", sqlalchemy.__version__)
 print("Ultralytics:", ultralytics.__version__)
+print("Safe model loading:", _SafeLoad.SUPPORTED)
 print("SAM2: OK")
 print("SAM1: OK")
+
+if not _SafeLoad.SUPPORTED:
+    raise SystemExit("ERROR: Safe YOLO model loading is unavailable. PyTorch 2.6+ is required.")
 PY
 
 echo
