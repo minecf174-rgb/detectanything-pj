@@ -38,7 +38,7 @@ cd "detect anything"
 bash setup-scripts/setup-new-machine.sh
 ```
 
-สคริปต์ตรวจระบบและ GPU แล้วเลือก PyTorch ที่เหมาะสม ติดตั้ง Backend ใน `venv/`, สำรอง SQLite เดิมก่อนทำ `alembic upgrade head` และติดตั้ง Frontend ด้วย `npm ci` ต้องมี Git, Python 3.11/3.12, Node.js 20+ และ npm อยู่ก่อน; สคริปต์จะแจ้งหากขาดอย่างใดอย่างหนึ่ง ไม่เขียนทับ `.env` และไม่ดาวน์โหลด pretrained weights ให้ หากใช้สคริปต์นี้แล้วข้ามขั้นตอนติดตั้ง 2, 3 และ 5 ด้านล่างได้
+สคริปต์ตรวจระบบและ GPU แล้วเลือก PyTorch ที่เหมาะสม ติดตั้ง Backend ใน `venv/`, ติดตั้ง Frontend ด้วย `npm ci`, ดาวน์โหลดและตรวจ `yolo26n-pose.pt` กับ `yolo26s.pt` ที่ root โปรเจกต์ แล้วสำรอง SQLite เดิมก่อนทำ `alembic upgrade head` ต้องมี Git, Python 3.11/3.12, Node.js 20+ และ npm อยู่ก่อน; สคริปต์จะแจ้งหากขาดอย่างใดอย่างหนึ่ง และไม่เขียนทับ `.env` หากใช้สคริปต์นี้แล้วข้ามขั้นตอนติดตั้ง 2-5 ด้านล่างได้สำหรับโมเดลค่าเริ่มต้น รุ่นอื่นที่เลือกเทรนจะดาวน์โหลดเมื่อใช้งาน
 
 ตรวจว่าเครื่องจะใช้ทางเลือกใดโดยไม่ติดตั้งหรือแก้ฐานข้อมูลได้ด้วย `bash setup-scripts/setup-new-machine.sh --check`
 
@@ -201,6 +201,14 @@ ngrok http 5173
 ผู้ใช้เปิด URL HTTPS ของ ngrok ได้โดยไม่ต้องเข้าถึงพอร์ต 8000 โดยตรง Request เช่น `/api/auth/login` จะถูก Vite ตัด prefix `/api` แล้วส่งเป็น `/auth/login` ไปยัง Backend หลังสร้างหรือแก้ `.env` ต้อง restart Backend และ Frontend หาก hostname ของ ngrok เปลี่ยน ให้แก้ `VITE_ALLOWED_HOSTS` และ restart Frontend อีกครั้ง
 
 โหมดนี้ไม่ต้องเพิ่ม public ngrok origin ใน `CORS_ORIGINS` เพราะ Browser เรียกหน้าเว็บและ `/api` จาก origin เดียวกัน ไม่ต้องเปลี่ยน Uvicorn เป็น `0.0.0.0` และไม่ควรตั้ง `VITE_ALLOWED_HOSTS=true`
+
+ถ้าติดตั้ง `screen` และ `ngrok` พร้อมตั้ง `AUTH_JWT_SECRET` ใน root `.env` แล้ว สามารถเปิด Backend, Frontend และ ngrok ใน screen สาม session ด้วยคำสั่งเดียวจาก root โปรเจกต์:
+
+```bash
+bash start-scripts.sh
+```
+
+สคริปต์หา root จากตำแหน่งไฟล์เอง จึงใช้ได้แม้โฟลเดอร์ชื่อ `detectanything-pj` โดยจะอ่าน HTTPS hostname ที่ ngrok ออกให้ แล้วอนุญาต hostname นั้นเฉพาะ Vite process ที่เปิดขึ้น ไม่เขียนทับ `.env` ดู log ได้ที่ `backend.log`, `fontend.log`, `ngrok.log` และใช้ `screen -ls` ตรวจ session ที่รันอยู่ หากพอร์ต 8000, 5173 หรือ 4040 ถูกใช้อยู่ สคริปต์จะหยุดก่อนเปิด server ซ้อน
 
 ลิงก์ tunnel ไม่ใช่กลไกควบคุมสิทธิ์ ระบบเปิดให้สมัครบัญชีได้และงาน upload, training หรือ prediction ใช้พื้นที่และทรัพยากรเครื่อง จึงควรแชร์เฉพาะผู้ทดสอบที่ไว้ใจหรือเพิ่ม access protection ที่ tunnel
 

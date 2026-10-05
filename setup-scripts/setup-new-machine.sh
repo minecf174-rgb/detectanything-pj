@@ -134,6 +134,49 @@ echo "Installing frontend packages from package-lock.json..."
     npm ci
 )
 
+echo
+echo "Installing default YOLO26 detection and pose weights..."
+"$PYTHON" - <<'PY'
+from pathlib import Path
+
+import torch
+from ultralytics.nn.tasks import _SafeLoad, guess_model_task, torch_safe_load
+from ultralytics.utils.downloads import attempt_download_asset
+
+if not _SafeLoad.SUPPORTED:
+    raise SystemExit("ERROR: Safe YOLO model loading is unavailable; PyTorch 2.6+ is required.")
+
+for filename, expected_task in (
+    ("yolo26n-pose.pt", "pose"),
+    ("yolo26s.pt", "detect"),
+):
+    weights = Path.cwd() / filename
+    if weights.exists():
+        print(f"Found {filename}; verifying existing weights...", flush=True)
+    else:
+        print(f"Downloading {filename} to the project root...", flush=True)
+        try:
+            attempt_download_asset(weights)
+        except Exception as exc:
+            raise SystemExit(f"ERROR: Could not download {filename}: {exc}") from exc
+
+    if not weights.is_file() or weights.stat().st_size == 0:
+        raise SystemExit(f"ERROR: {filename} was not downloaded to the project root.")
+
+    try:
+        checkpoint, _ = torch_safe_load(str(weights), safe_only=True)
+        model = checkpoint.get("ema") or checkpoint.get("model")
+        if not isinstance(model, torch.nn.Module) or guess_model_task(model) != expected_task:
+            raise ValueError(f"expected a {expected_task} model")
+    except Exception as exc:
+        raise SystemExit(
+            f"ERROR: {filename} is not a valid {expected_task} checkpoint: {exc}. "
+            "Move the file aside if it was already present, then rerun setup."
+        ) from exc
+
+    print(f"Ready: {filename} ({weights.stat().st_size / 1024**2:.1f} MiB)", flush=True)
+PY
+
 # Preserve existing SQLite data before Alembic changes its schema. The backup
 # API also includes committed data in a SQLite WAL file if one is present.
 "$PYTHON" - <<'PY'
