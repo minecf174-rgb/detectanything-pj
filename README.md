@@ -32,6 +32,16 @@ cd "detect anything"
 
 คำสั่งในขั้นตอน 2-4 ต้องรันจาก **root ของโปรเจกต์** (โฟลเดอร์ที่มี `alembic.ini`) เพราะ path ของ SQLite, storage และโมเดลอ้างอิงตำแหน่งนี้
 
+หากต้องการติดตั้งทั้งหมดด้วยคำสั่งเดียวบน macOS หรือ Linux (รวมเครื่อง NVIDIA CUDA) ให้รันจาก root โปรเจกต์:
+
+```bash
+bash setup-scripts/setup-new-machine.sh
+```
+
+สคริปต์ตรวจระบบและ GPU แล้วเลือก PyTorch ที่เหมาะสม ติดตั้ง Backend ใน `venv/`, สำรอง SQLite เดิมก่อนทำ `alembic upgrade head` และติดตั้ง Frontend ด้วย `npm ci` ต้องมี Git, Python 3.11/3.12, Node.js 20+ และ npm อยู่ก่อน; สคริปต์จะแจ้งหากขาดอย่างใดอย่างหนึ่ง ไม่เขียนทับ `.env` และไม่ดาวน์โหลด pretrained weights ให้ หากใช้สคริปต์นี้แล้วข้ามขั้นตอนติดตั้ง 2, 3 และ 5 ด้านล่างได้
+
+ตรวจว่าเครื่องจะใช้ทางเลือกใดโดยไม่ติดตั้งหรือแก้ฐานข้อมูลได้ด้วย `bash setup-scripts/setup-new-machine.sh --check`
+
 ### 2. ติดตั้ง Backend
 
 ```bash
