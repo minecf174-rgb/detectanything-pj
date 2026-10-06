@@ -1175,6 +1175,8 @@ h2 {
   gap: 10px;
 }
 
+.canvas-upload-empty small { font-size: 12px; font-weight: 500; }
+
 .canvas-drop-overlay {
   align-items: center;
   background: rgba(244, 248, 255, 0.92);
@@ -1998,6 +2000,7 @@ h2 {
 .negative-review-note { align-items: flex-start; background: #fff7e8; border: 1px solid #f4ddae; border-radius: 8px; color: #76500e; display: flex; font-size: 12px; gap: 9px; line-height: 1.5; padding: 12px; }
 .negative-review-note svg { flex: none; }
 .negative-review-details button { align-items: center; display: flex; gap: 8px; justify-content: center; }
+.negative-review-details button kbd { border: 1px solid currentColor; border-radius: 4px; font-family: inherit; font-size: 11px; font-weight: 800; line-height: 1; margin-left: 4px; padding: 3px 5px; }
 .negative-review-done { align-content: center; color: #64748b; display: grid; gap: 10px; grid-column: 1 / -1; justify-items: center; padding: 24px; text-align: center; }
 .negative-review-done svg { color: #16834e; }
 .negative-review-done strong { color: #222c3e; font-size: 18px; }
@@ -2340,23 +2343,27 @@ h2 {
   opacity: 1;
 }
 
-.result-preview img {
-  display: block;
+.result-preview-content,
+.result-preview-content > .image-selector-preview {
   height: 100%;
-  object-fit: fill;
-  position: absolute;
-  inset: 0;
   width: 100%;
 }
 
-.result-box {
-  border: 2px solid #f59e0b;
+.result-preview-content > .image-selector-preview img {
   display: block;
-  min-height: 4px;
-  min-width: 4px;
-  pointer-events: none;
-  position: absolute;
-  z-index: 2;
+  height: 100%;
+  object-fit: contain;
+  width: 100%;
+}
+
+.result-preview .image-selector-preview .pose-keypoint {
+  border-width: 1px;
+  height: 7px;
+  width: 7px;
+}
+
+.result-preview .pose-skeleton line {
+  stroke-width: 1.5;
 }
 
 .result-badge {
@@ -2369,6 +2376,8 @@ h2 {
   left: 8px;
   padding: 5px 7px;
   position: absolute;
+  pointer-events: none;
+  z-index: 12;
 }
 
 .result-badge.detected {
@@ -3485,6 +3494,8 @@ h2 {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+
+.annotation-import-data { justify-content: center; width: 100%; }
 
 .panel-note {
   color: #718096;

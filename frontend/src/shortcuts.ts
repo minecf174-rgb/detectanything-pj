@@ -1,4 +1,4 @@
-export type ShortcutContext = "detect" | "pose" | "pose-drawing" | "detect-edit" | "pose-edit";
+export type ShortcutContext = "detect" | "pose" | "pose-drawing" | "detect-edit" | "pose-edit" | "negative-review";
 
 export type ShortcutDefinition = {
   id: string;
@@ -13,8 +13,8 @@ const idle: ShortcutContext[] = ["detect", "pose"];
 const editing: ShortcutContext[] = ["detect-edit", "pose-edit"];
 
 export const SHORTCUT_DEFINITIONS: ShortcutDefinition[] = [
-  { id: "previousImage", group: "Navigation", label: "Previous image", description: "Move to the image before this one when no edit is open.", defaultKey: "ArrowLeft", contexts: idle },
-  { id: "nextImage", group: "Navigation", label: "Next image", description: "Move to the next image when no edit is open.", defaultKey: "ArrowRight", contexts: idle },
+  { id: "previousImage", group: "Navigation", label: "Previous image", description: "Move to the image before this one when no edit is open, including no-box review.", defaultKey: "ArrowLeft", contexts: [...idle, "negative-review"] },
+  { id: "nextImage", group: "Navigation", label: "Next image", description: "Move to the next image when no edit is open, including no-box review.", defaultKey: "ArrowRight", contexts: [...idle, "negative-review"] },
   { id: "save", group: "Editing", label: "Save labels", description: "Save a completed draft, or save the current revision/correction when editing.", defaultKey: "Mod+S", contexts: ["detect", "pose", "pose-drawing", ...editing] },
   { id: "cancelEdit", group: "Editing", label: "Cancel editing", description: "Close the revision/correction editor or cancel a pose being placed. Unsaved edits are discarded.", defaultKey: "Escape", contexts: ["pose-drawing", ...editing] },
   { id: "undoDraft", group: "Editing", label: "Undo draft", description: "Remove the last unsaved box or pose point.", defaultKey: "Backspace", contexts: ["detect", "pose", "pose-drawing"] },
@@ -24,6 +24,7 @@ export const SHORTCUT_DEFINITIONS: ShortcutDefinition[] = [
   { id: "acceptSuggestion", group: "Auto-label review", label: "Accept suggestion", description: "Accept the only pending suggestion on this image, when no draft is open.", defaultKey: "Y", contexts: idle },
   { id: "rejectSuggestion", group: "Auto-label review", label: "Reject suggestion", description: "Reject the only pending suggestion on this image, when no draft is open.", defaultKey: "N", contexts: idle },
   { id: "editSuggestion", group: "Auto-label review", label: "Edit suggestion", description: "Open the only pending suggestion for correction.", defaultKey: "E", contexts: idle },
+  { id: "verifyNegative", group: "No-box review", label: "Verify negative", description: "Confirm the current image has no target objects in Select image → Review no-box.", defaultKey: "V", contexts: ["negative-review"] },
   ...Array.from({ length: 9 }, (_, index): ShortcutDefinition => ({
     id: `class${index + 1}`, group: "Object Detection", label: `Select class ${index + 1}`,
     description: `Select class in position ${index + 1} of the Classes list, if it exists.`,

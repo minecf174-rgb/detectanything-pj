@@ -838,20 +838,6 @@ export function App() {
     void activateProject(projectId);
   };
 
-  const uploadImages = (fileList: FileList | null) => {
-    const files = Array.from(fileList ?? []);
-    if (files.length === 0 || !selectedProjectId) return;
-    void runAction(`Upload ${files.length} images`, async () => {
-      let lastImage: ImageItem | null = null;
-      updateOperationProgress("Uploading images…", 0, files.length);
-      for (const [index, file] of files.entries()) {
-        lastImage = await api.uploadImage(selectedProjectId, file);
-        updateOperationProgress(`Uploaded ${file.name}`, index + 1, files.length);
-      }
-      if (lastImage) await selectAnnotationImage(lastImage.image_id);
-    }, { showProgress: true });
-  };
-
   const openImageManager = () => {
     if (!selectedProjectId) return;
     void runAction("Load image manager", async () => {
@@ -894,10 +880,11 @@ export function App() {
     });
   };
 
-  const importData = (fileList: FileList | File[] | null) => {
+  const importData = (fileList: FileList | File[] | null, selectUploadedImage = false) => {
     const files = Array.from(fileList ?? []);
     if (files.length === 0 || !selectedProjectId) return;
     void runAction(`Import ${files.length} file${files.length === 1 ? "" : "s"}`, async () => {
+      let lastUploadedImage: ImageItem | null = null;
       updateOperationProgress("Checking files…", 0, files.length);
       for (const [index, file] of files.entries()) {
         updateOperationProgress(`Processing ${file.name}…`, index, files.length);
@@ -921,9 +908,10 @@ export function App() {
         if (!file.type.startsWith("image/")) {
           throw new Error(`Unsupported file: ${file.name}`);
         }
-        await api.uploadImage(selectedProjectId, file);
+        lastUploadedImage = await api.uploadImage(selectedProjectId, file);
         updateOperationProgress(`Imported ${file.name}`, index + 1, files.length);
       }
+      if (selectUploadedImage && lastUploadedImage) await selectAnnotationImage(lastUploadedImage.image_id);
     }, { showProgress: true });
   };
 
@@ -2003,6 +1991,10 @@ export function App() {
               </button>
               <small>{selectedImage ? `Viewing #${selectedImageIndex} · ${selectedImage.original_filename ?? `image-${selectedImageIndex}`}` : "No image selected"}</small>
             </div>
+            <label className="file-button annotation-import-data">
+              <Upload size={16} /> Import data
+              <input type="file" accept="image/*,.zip,application/zip" multiple disabled={busy} onChange={(event) => { importData(event.target.files, true); event.currentTarget.value = ""; }} />
+            </label>
             {poseProject && <button className="annotation-primary-action" onClick={startPoseCollection} disabled={!selectedImageId || selectedClassId == null || busy || !!editableSet || poseCollecting} title={`Start a pose (${shortcuts.addPose || "unassigned"}), then click 17 body keypoints`}>
               <Plus size={16} /> Add pose{shortcuts.addPose ? ` · ${shortcuts.addPose}` : ""}
             </button>}
@@ -2066,7 +2058,7 @@ export function App() {
             onEditableSelect={setSelectedReviewBoxIndex}
             onEditableChange={updateReviewBox}
             onEditableEditStart={rememberReviewBoxes}
-            onUploadImages={uploadImages}
+            onImportData={(files) => importData(files, true)}
             poseCollecting={poseCollecting}
             posePoints={posePoints}
             onPosePoint={addPosePoint}
@@ -2432,6 +2424,7 @@ export function App() {
           pendingImageIds={pendingReviewImageIds}
           annotationStatuses={imageAnnotationStatuses}
           busy={busy}
+          shortcuts={shortcuts}
           initialView={imageSelectorInitialView}
           onSelect={(imageId) => { void selectAnnotationImage(imageId).then((selected) => { if (selected) { setImageSelectorOpen(false); setImageSelectorInitialView("browse"); } }); }}
           onConfirmNegative={confirmNegative}
@@ -2597,7 +2590,7 @@ function ShortcutSettingsModal({ bindings, onChange, onClose }: {
         <div><h2 id="shortcut-settings-title">Keyboard shortcuts</h2><p>Choose the keys that fit your labeling workflow. Changes are saved for your account on this browser.</p></div>
         <button type="button" className="icon-button" onClick={onClose} title="Close shortcut settings"><X size={20} /></button>
       </header>
-      <div className="shortcut-settings-note">Shortcuts work in Annotate when no dialog or text field is active. Click a key to record a new one. Keys can be shared only when their actions never run in the same workflow.</div>
+      <div className="shortcut-settings-note">Shortcuts work in Annotate when no dialog or text field is active; no-box review shortcuts work inside Select image → Review no-box. Click a key to record a new one. Keys can be shared only when their actions never run in the same workflow.</div>
       {error && <div className="shortcut-settings-error" role="alert">{error}</div>}
       <div className="shortcut-settings-list">
         {groups.map((group) => <section className="shortcut-settings-group" key={group}>
@@ -2630,6 +2623,7 @@ function ImageSelectorModal({
   pendingImageIds,
   annotationStatuses,
   busy,
+  shortcuts,
   initialView,
   onSelect,
   onConfirmNegative,
@@ -2646,6 +2640,7 @@ function ImageSelectorModal({
   pendingImageIds: Set<number>;
   annotationStatuses: ImageAnnotationStatus[];
   busy: boolean;
+  shortcuts: ShortcutBindings;
   initialView: "browse" | "negative";
   onSelect: (imageId: number) => void;
   onConfirmNegative: (imageId: number) => void;
@@ -2934,7 +2929,7 @@ function ImageSelectorModal({
           <button className="danger-button" onClick={onRejectAll} disabled={busy}><Trash2 size={16} /> Reject all ({pendingImageIds.size})</button>
         </div>}
       </footer>
-      </> : <NegativeReviewContent images={images} annotationStatuses={annotationStatuses} busy={busy} onConfirm={onConfirmNegative} onDraw={onDrawNegative} onBack={() => setView("browse")} />}
+      </> : <NegativeReviewContent images={images} annotationStatuses={annotationStatuses} busy={busy} shortcuts={shortcuts} onConfirm={onConfirmNegative} onDraw={onDrawNegative} onBack={() => setView("browse")} />}
     </section>
   </div>;
 }
@@ -3586,7 +3581,7 @@ function ImageSelectorPreview({
       : <span className="protected-image-placeholder">Loading image...</span>}
     {imageReady && preview?.annotations.map((box, index) => <span key={index}>
       <Box box={box} frame={frame} tone={tone} color={classColors[box.class_id]} label={showTags ? classNames?.[box.class_id] : undefined} />
-      <PoseKeypoints keypoints={(box.keypoints ?? []).map((point) => ({ x: point.x, y: point.y, visibility: point.visibility }))} frame={frame} tone={tone} />
+      <PoseKeypoints keypoints={box.keypoints ?? []} frame={frame} tone={tone} />
     </span>)}
   </div>;
 }
@@ -4017,10 +4012,11 @@ function TestPoseSkeleton({
   );
 }
 
-function NegativeReviewContent({ images, annotationStatuses, busy, onConfirm, onDraw, onBack }: {
+function NegativeReviewContent({ images, annotationStatuses, busy, shortcuts, onConfirm, onDraw, onBack }: {
   images: ImageItem[];
   annotationStatuses: ImageAnnotationStatus[];
   busy: boolean;
+  shortcuts: ShortcutBindings;
   onConfirm: (imageId: number) => void;
   onDraw: (imageId: number) => void;
   onBack: () => void;
@@ -4034,23 +4030,37 @@ function NegativeReviewContent({ images, annotationStatuses, busy, onConfirm, on
   const [index, setIndex] = useState(0);
   const image = candidates[Math.min(index, Math.max(0, candidates.length - 1))] ?? null;
   const imageNumber = image ? images.findIndex((item) => item.image_id === image.image_id) + 1 : 0;
+  const confirmShortcutInFlight = useRef(false);
+
+  useEffect(() => {
+    if (!busy) confirmShortcutInFlight.current = false;
+  }, [busy, image?.image_id]);
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
       if (busy) return;
-      if (event.key === "Escape") onBack();
-      if (event.key === "ArrowLeft") {
+      const target = event.target as HTMLElement | null;
+      if (target?.isContentEditable || ["INPUT", "SELECT", "TEXTAREA"].includes(target?.tagName ?? "")) return;
+      if (event.key === "Escape") { onBack(); return; }
+      if (matchesShortcut(event, shortcuts, "verifyNegative")) {
+        event.preventDefault();
+        if (!image || event.repeat || confirmShortcutInFlight.current) return;
+        confirmShortcutInFlight.current = true;
+        onConfirm(image.image_id);
+        return;
+      }
+      if (matchesShortcut(event, shortcuts, "previousImage")) {
         event.preventDefault();
         setIndex((current) => Math.max(0, current - 1));
       }
-      if (event.key === "ArrowRight" && candidates.length > 0) {
+      if (matchesShortcut(event, shortcuts, "nextImage") && candidates.length > 0) {
         event.preventDefault();
         setIndex((current) => Math.min(candidates.length - 1, current + 1));
       }
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [busy, candidates.length, onBack]);
+  }, [busy, candidates.length, image, onBack, onConfirm, shortcuts]);
 
   return <div className="image-selector-review-view">
       <div className="negative-review-main">
@@ -4061,7 +4071,7 @@ function NegativeReviewContent({ images, annotationStatuses, busy, onConfirm, on
             <h4>Image #{imageNumber}</h4>
             <p title={image.original_filename ?? ""}>{image.original_filename ?? `image-${imageNumber}`}</p>
             <div className="negative-review-note"><CircleAlert size={18} /><span>No detection does not mean this image is negative. If an object is visible, draw its box instead.</span></div>
-            <button className="primary" type="button" onClick={() => onConfirm(image.image_id)} disabled={busy}><Check size={16} /> Confirm no objects</button>
+            <button className="primary" type="button" onClick={() => onConfirm(image.image_id)} disabled={busy}><Check size={16} /> Confirm no objects{shortcuts.verifyNegative && <kbd>{shortcuts.verifyNegative}</kbd>}</button>
             <button type="button" onClick={() => onDraw(image.image_id)} disabled={busy}><Pencil size={16} /> Object visible · draw label</button>
           </aside>
         </> : <div className="negative-review-done"><Check size={30} /><strong>No images waiting for negative review</strong><span>Verified negatives can now be selected when you create a dataset version.</span></div>}
@@ -4358,20 +4368,7 @@ function AutoLabelResultsModal({
                     onClick={() => onOpen(result)}
                     title={canReview ? "Open this image for review" : "View this image"}
                   >
-                    <ProtectedImage image={result.image} alt={result.image.original_filename ?? `Image ${result.image.image_id}`} />
-                    {result.annotationSet?.annotations.map((box, index) => (
-                      <span
-                        className="result-box"
-                        key={`${result.annotationSet?.annotation_set_id}-${box.annotation_id ?? index}`}
-                        style={{
-                          borderColor: classColors[box.class_id] ?? "#f59e0b",
-                          left: `${box.x_min * 100}%`,
-                          top: `${box.y_min * 100}%`,
-                          width: `${(box.x_max - box.x_min) * 100}%`,
-                          height: `${(box.y_max - box.y_min) * 100}%`,
-                        }}
-                      />
-                    ))}
+                    <AutoLabelResultPreview result={result} classColors={classColors} />
                     <span className={boxCount > 0 ? "result-badge detected" : "result-badge"}>
                       {boxCount} {boxCount === 1 ? "box" : "boxes"}
                     </span>
@@ -4409,6 +4406,38 @@ function AutoLabelResultsModal({
   );
 }
 
+function AutoLabelResultPreview({
+  result,
+  classColors,
+}: {
+  result: AutoLabelResult;
+  classColors: Record<number, string>;
+}) {
+  const containerRef = useRef<HTMLDivElement | null>(null);
+  const [aspectRatio, setAspectRatio] = useState(4 / 3);
+
+  useEffect(() => {
+    const container = containerRef.current;
+    if (!container) return;
+    const observer = new ResizeObserver(([entry]) => {
+      if (entry.contentRect.height > 0) setAspectRatio(entry.contentRect.width / entry.contentRect.height);
+    });
+    observer.observe(container);
+    return () => observer.disconnect();
+  }, []);
+
+  const frame = getImageFrameForDimensions(result.image.width ?? 1, result.image.height ?? 1, aspectRatio);
+  return <div className="result-preview-content" ref={containerRef}>
+    <ImageSelectorPreview
+      image={result.image}
+      alt={result.image.original_filename ?? `Image ${result.image.image_id}`}
+      preview={result.annotationSet}
+      frame={frame}
+      classColors={classColors}
+    />
+  </div>;
+}
+
 function AnnotationCanvas({
   image,
   boxes,
@@ -4424,7 +4453,7 @@ function AnnotationCanvas({
   onEditableSelect,
   onEditableChange,
   onEditableEditStart,
-  onUploadImages,
+  onImportData,
   poseCollecting,
   posePoints,
   onPosePoint,
@@ -4447,7 +4476,7 @@ function AnnotationCanvas({
   onEditableSelect: (index: number | null) => void;
   onEditableChange: (index: number, box: ReviewBox) => void;
   onEditableEditStart: () => void;
-  onUploadImages: (files: FileList | null) => void;
+  onImportData: (files: FileList | null) => void;
   poseCollecting: boolean;
   posePoints: PosePoint[];
   onPosePoint: (point: { x: number; y: number }) => void;
@@ -4527,12 +4556,12 @@ function AnnotationCanvas({
       onDragEnter={(event) => {
         if (!canHandleFiles(event)) return;
         event.preventDefault();
-        setIsFileDragActive(true);
+        if (!busy) setIsFileDragActive(true);
       }}
       onDragOver={(event) => {
         if (!canHandleFiles(event)) return;
         event.preventDefault();
-        event.dataTransfer.dropEffect = "copy";
+        event.dataTransfer.dropEffect = busy ? "none" : "copy";
       }}
       onDragLeave={(event) => {
         if (event.currentTarget.contains(event.relatedTarget as Node)) return;
@@ -4542,7 +4571,7 @@ function AnnotationCanvas({
         if (!canHandleFiles(event)) return;
         event.preventDefault();
         setIsFileDragActive(false);
-        onUploadImages(event.dataTransfer.files);
+        if (!busy) onImportData(event.dataTransfer.files);
       }}
       onPointerDown={(event) => {
         if (busy || !imageReady) {
@@ -4591,10 +4620,11 @@ function AnnotationCanvas({
         ref={fileInputRef}
         className="canvas-file-input"
         type="file"
-        accept="image/*"
+        accept="image/*,.zip,application/zip"
         multiple
+        disabled={busy}
         onChange={(event) => {
-          onUploadImages(event.target.files);
+          onImportData(event.target.files);
           event.currentTarget.value = "";
         }}
       />
@@ -4610,9 +4640,9 @@ function AnnotationCanvas({
           {!imageReady && <div className="empty">Image file missing. Upload this image again.</div>}
         </>
       ) : (
-        <div className="empty canvas-upload-empty"><Upload size={24} /><span>Drop images here or click to browse</span></div>
+        <div className="empty canvas-upload-empty"><Upload size={24} /><span>Drop images or a ZIP here, or click to browse</span><small>Image archives and YOLO datasets are detected automatically.</small></div>
       )}
-      {isFileDragActive && <div className="canvas-drop-overlay"><Upload size={28} /><strong>Drop images to upload</strong></div>}
+      {isFileDragActive && !busy && <div className="canvas-drop-overlay"><Upload size={28} /><strong>Drop images or a ZIP to import</strong></div>}
       {imageReady && boxes.map((box, index) => <Box key={`box-${index}`} box={box} frame={imageFrame} tone="approved" color={classColors[box.class_id]} label={classNames[box.class_id]} />)}
       {imageReady && suggestions.map((box, index) => <Box key={`suggestion-${index}`} box={box} frame={imageFrame} tone="suggestion" color={classColors[box.class_id]} label={classNames[box.class_id]} />)}
       {imageReady && draftBoxes.map((box, index) => <Box key={`draft-${index}`} box={box} frame={imageFrame} tone="draft" color={classColors[box.class_id]} label={classNames[box.class_id]} />)}
