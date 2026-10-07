@@ -452,6 +452,44 @@ label {
   padding: 10px;
 }
 
+.test-dataset-source {
+  align-items: center;
+  background: #eef5ff;
+  border: 1px solid #c8dcff;
+  border-radius: 8px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  padding: 12px;
+}
+
+.test-dataset-source > div {
+  display: grid;
+  flex: 1 1 280px;
+  gap: 2px;
+}
+
+.test-dataset-source > div span,
+.test-source-caption {
+  color: #64748b;
+  font-size: 13px;
+}
+
+.test-dataset-source select {
+  flex: 0 1 240px;
+  min-width: 180px;
+}
+
+.test-dataset-source button {
+  align-items: center;
+  display: inline-flex;
+  gap: 6px;
+}
+
+.test-source-caption {
+  padding: 0 2px;
+}
+
 .test-controls {
   display: grid;
   gap: 8px;
@@ -1195,17 +1233,17 @@ h2 {
 .pose-keypoint {
   align-items: center;
   background: #e11d48;
-  border: 2px solid #ffffff;
+  border: 1.5px solid #ffffff;
   border-radius: 50%;
   color: #ffffff;
   display: flex;
-  font-size: 10px;
+  font-size: 7px;
   font-weight: 800;
-  height: 18px;
+  height: 12px;
   justify-content: center;
   position: absolute;
   transform: translate(-50%, -50%);
-  width: 18px;
+  width: 12px;
   z-index: 9;
 }
 
@@ -1226,7 +1264,7 @@ h2 {
 .pose-skeleton line {
   stroke: #e11d48;
   stroke-linecap: round;
-  stroke-width: 2;
+  stroke-width: 1.5;
   vector-effect: non-scaling-stroke;
 }
 
@@ -1241,9 +1279,9 @@ h2 {
 }
 
 .pose-keypoint.selected {
-  box-shadow: 0 0 0 3px #276ef1;
-  height: 22px;
-  width: 22px;
+  box-shadow: 0 0 0 2px #276ef1;
+  height: 16px;
+  width: 16px;
   z-index: 10;
 }
 
@@ -2164,6 +2202,16 @@ h2 {
   color: #1f5fd1;
 }
 
+.dataset-selection-filters > button.active {
+  background: #eaf1ff;
+  border-color: #276ef1;
+  color: #1f5fd1;
+}
+
+.dataset-drag-hint {
+  color: #64748b;
+}
+
 .dataset-selection-grid {
   align-content: start;
   display: grid;
@@ -2192,6 +2240,16 @@ h2 {
 .dataset-image-item.selected {
   border-color: #276ef1;
   background: #eaf1ff;
+}
+
+.drag-select-enabled .dataset-image-item {
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.drag-select-enabled .dataset-image-item img {
+  -webkit-user-drag: none;
 }
 
 .dataset-image-preview {
@@ -3509,6 +3567,16 @@ h2 {
 
 .annotation-primary-action {
   border-color: #94a8c6;
+}
+
+.annotation-negative-status {
+  align-items: center;
+  color: #16834e;
+  display: flex;
+  font-size: 12px;
+  font-weight: 700;
+  gap: 7px;
+  padding: 2px 4px;
 }
 
 .annotation-action-grid {

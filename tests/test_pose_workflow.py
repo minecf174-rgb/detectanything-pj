@@ -145,3 +145,21 @@ def test_pretrained_pose_job_and_outside_frame_keypoints_are_supported():
     label_file = next((Path(build_response.json()["output_dir"]) / "labels" / "train").glob("*.txt"))
     label_values = label_file.read_text().strip().split()
     assert label_values[-3:] == ["0.000000", "0.000000", "0"]
+
+    cleared = client.post(
+        f"/annotations/sets/{annotation_response.json()['annotation_set_id']}/edit",
+        headers=headers,
+        json={"annotations": []},
+    )
+    assert cleared.status_code == 200, cleared.text
+    assert cleared.json()["annotations"] == []
+
+    retry_after_clearing = client.post("/auto-label-jobs", headers=headers, json=retry_payload)
+    assert retry_after_clearing.status_code == 200, retry_after_clearing.text
+    assert retry_after_clearing.json()["total_images"] == 1
+
+    verified = client.post(f"/annotations/images/{image_id}/confirm-negative", headers=headers)
+    assert verified.status_code == 200, verified.text
+    assert verified.json()["is_negative"] is True
+    retry_after_verifying = client.post("/auto-label-jobs", headers=headers, json=retry_payload)
+    assert retry_after_verifying.status_code == 400, retry_after_verifying.text

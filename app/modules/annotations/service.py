@@ -93,28 +93,30 @@ class AnnotationService:
             .order_by(AnnotationSet.revision.desc())
             .limit(1)
         )
-        if latest is not None and self.db.scalar(
-            select(Annotation.annotation_id)
-            .where(Annotation.annotation_set_id == latest.annotation_set_id)
-            .limit(1)
-        ) is not None:
-            raise HTTPException(
-                status_code=409,
-                detail="Image has boxes; review and remove them before confirming negative",
+        pending_sets = list(self.db.scalars(
+            select(AnnotationSet).where(
+                AnnotationSet.image_id == image_id,
+                AnnotationSet.source_type == "MODEL",
+                AnnotationSet.status == "PENDING",
             )
+        ))
+        reviewed_at = datetime.now(timezone.utc)
+        for annotation_set in pending_sets:
+            annotation_set.status = "REJECTED"
+            annotation_set.reviewed_by = current_user.user_id
+            annotation_set.reviewed_at = reviewed_at
+        AutoLabelRepository(self.db).mark_items_reviewed_by_annotation_sets(
+            [annotation_set.annotation_set_id for annotation_set in pending_sets]
+        )
         if latest is not None and latest.is_negative:
+            self.db.commit()
             return self.repository.get_set(latest.annotation_set_id)
-        if latest is not None and latest.status == "PENDING":
-            latest.status = "REJECTED"
-            latest.reviewed_by = current_user.user_id
-            latest.reviewed_at = datetime.now(timezone.utc)
-            AutoLabelRepository(self.db).mark_item_reviewed_by_annotation_set(latest.annotation_set_id)
         negative = self.repository.create_set(
             image_id, self.repository.next_revision(image_id), AnnotationSetCreate(annotations=[]), current_user.user_id
         )
         negative.is_negative = True
         negative.reviewed_by = current_user.user_id
-        negative.reviewed_at = datetime.now(timezone.utc)
+        negative.reviewed_at = reviewed_at
         self.db.commit()
         return self.repository.get_set(negative.annotation_set_id)
 

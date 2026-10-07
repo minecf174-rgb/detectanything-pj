@@ -21,21 +21,26 @@ export const SHORTCUT_DEFINITIONS: ShortcutDefinition[] = [
   { id: "undoDraftAlt", group: "Editing", label: "Undo draft (alternate)", description: "Second key for removing the last unsaved box or pose point.", defaultKey: "Delete", contexts: ["detect", "pose", "pose-drawing"] },
   { id: "deleteBox", group: "Editing", label: "Delete selected box", description: "Remove the selected box while editing a revision/correction.", defaultKey: "Backspace", contexts: editing },
   { id: "deleteBoxAlt", group: "Editing", label: "Delete selected box (alternate)", description: "Second key for deleting the selected box.", defaultKey: "Delete", contexts: editing },
+  { id: "editSavedLabels", group: "Editing", label: "Edit saved labels", description: "Open Edit labels for the approved labels on the current image. Separate from editing a pending Auto-label suggestion.", defaultKey: "D", contexts: idle },
   { id: "acceptSuggestion", group: "Auto-label review", label: "Accept suggestion", description: "Accept the only pending suggestion on this image, when no draft is open.", defaultKey: "Y", contexts: idle },
   { id: "rejectSuggestion", group: "Auto-label review", label: "Reject suggestion", description: "Reject the only pending suggestion on this image, when no draft is open.", defaultKey: "N", contexts: idle },
   { id: "editSuggestion", group: "Auto-label review", label: "Edit suggestion", description: "Open the only pending suggestion for correction.", defaultKey: "E", contexts: idle },
+  { id: "verifyCurrentNegative", group: "Negative verification", label: "Verify current image as negative", description: "Confirm the open image has no target objects; clears active boxes and rejects pending suggestions. Unsaved drafts must be finished first.", defaultKey: "V", contexts: idle },
   { id: "verifyNegative", group: "No-box review", label: "Verify negative", description: "Confirm the current image has no target objects in Select image → Review no-box.", defaultKey: "V", contexts: ["negative-review"] },
   ...Array.from({ length: 9 }, (_, index): ShortcutDefinition => ({
     id: `class${index + 1}`, group: "Object Detection", label: `Select class ${index + 1}`,
     description: `Select class in position ${index + 1} of the Classes list, if it exists.`,
     defaultKey: String(index + 1), contexts: ["detect"],
   })),
-  { id: "addPose", group: "Pose Estimation", label: "Add pose", description: "Start placing a new 17-point person pose.", defaultKey: "A", contexts: ["pose"] },
-  { id: "poseVisible", group: "Pose Estimation", label: "Visible point", description: "Mark the next new pose point as visible before clicking the image.", defaultKey: "1", contexts: ["pose-drawing"] },
-  { id: "poseOccluded", group: "Pose Estimation", label: "Occluded point", description: "Mark the next new pose point as occluded before clicking the image.", defaultKey: "2", contexts: ["pose-drawing"] },
-  { id: "poseOutside", group: "Pose Estimation", label: "Outside frame", description: "Skip the next new pose point as outside the frame.", defaultKey: "3", contexts: ["pose-drawing"] },
-  { id: "previousPoint", group: "Pose Estimation", label: "Previous keypoint", description: "Select the preceding keypoint while editing a pose.", defaultKey: "Q", contexts: ["pose-edit"] },
-  { id: "nextPoint", group: "Pose Estimation", label: "Next keypoint", description: "Select the following keypoint while editing a pose.", defaultKey: "E", contexts: ["pose-edit"] },
+  { id: "addPose", group: "Pose · Add", label: "Add pose", description: "Start placing a new 17-point person pose.", defaultKey: "A", contexts: ["pose"] },
+  { id: "poseVisible", group: "Pose · Add", label: "Visible point", description: "Mark the next new pose point as visible before clicking the image.", defaultKey: "1", contexts: ["pose-drawing"] },
+  { id: "poseOccluded", group: "Pose · Add", label: "Occluded point", description: "Mark the next new pose point as occluded before clicking the image.", defaultKey: "2", contexts: ["pose-drawing"] },
+  { id: "poseOutside", group: "Pose · Add", label: "Outside frame", description: "Skip the next new pose point as outside the frame.", defaultKey: "3", contexts: ["pose-drawing"] },
+  { id: "previousPoint", group: "Pose · Edit", label: "Previous keypoint", description: "Select the preceding keypoint while editing a pose.", defaultKey: "Q", contexts: ["pose-edit"] },
+  { id: "nextPoint", group: "Pose · Edit", label: "Next keypoint", description: "Select the following keypoint while editing a pose.", defaultKey: "E", contexts: ["pose-edit"] },
+  { id: "poseEditVisible", group: "Pose · Edit", label: "Visible point", description: "Use visible for the selected keypoint when you next click the image.", defaultKey: "1", contexts: ["pose-edit"] },
+  { id: "poseEditOccluded", group: "Pose · Edit", label: "Occluded point", description: "Use occluded for the selected keypoint when you next click the image.", defaultKey: "2", contexts: ["pose-edit"] },
+  { id: "poseEditOutside", group: "Pose · Edit", label: "Outside frame", description: "Mark the selected keypoint outside the frame and advance.", defaultKey: "3", contexts: ["pose-edit"] },
 ];
 
 export type ShortcutBindings = Record<string, string>;
@@ -67,7 +72,13 @@ export function loadShortcuts(userId: number | undefined): ShortcutBindings {
   if (userId == null) return { ...DEFAULT_SHORTCUTS };
   try {
     const saved = JSON.parse(localStorage.getItem(`cv-platform.shortcuts.${userId}`) ?? "{}") as ShortcutBindings;
-    return Object.fromEntries(SHORTCUT_DEFINITIONS.map(({ id, defaultKey }) => [id, typeof saved[id] === "string" ? saved[id] : defaultKey]));
+    const bindings = Object.fromEntries(SHORTCUT_DEFINITIONS.map(({ id, defaultKey }) =>
+      [id, typeof saved[id] === "string" ? saved[id] : defaultKey]
+    ));
+    for (const id of ["poseEditVisible", "poseEditOccluded", "poseEditOutside", "verifyCurrentNegative", "editSavedLabels"]) {
+      if (typeof saved[id] !== "string" && shortcutConflict(bindings, id, bindings[id])) bindings[id] = "";
+    }
+    return bindings;
   } catch {
     return { ...DEFAULT_SHORTCUTS };
   }

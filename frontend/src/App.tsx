@@ -335,6 +335,7 @@ export function App() {
   const [autoLabelConfidenceInput, setAutoLabelConfidenceInput] = useState("0.25");
   const [selectedTestModelId, setSelectedTestModelId] = useState<number | "pose-pretrained" | null>(null);
   const [testImages, setTestImages] = useState<TestImage[]>([]);
+  const [testDatasetSource, setTestDatasetSource] = useState<string | null>(null);
   const [testPredictions, setTestPredictions] = useState<(ModelPrediction | null)[]>([]);
   const [testFailures, setTestFailures] = useState<Record<number, string>>({});
   const [testProgress, setTestProgress] = useState<TestRunProgress>({ processed: 0, total: 0, running: false, elapsedMs: 0, currentFrom: 0, currentTo: 0, currentImageIndex: null });
@@ -366,6 +367,7 @@ export function App() {
   const selectedProjectTask = selectedProject?.task_type === "POSE_ESTIMATION" ? "POSE_ESTIMATION" : "OBJECT_DETECTION";
   const poseProject = selectedProjectTask === "POSE_ESTIMATION";
   const visibleAnnotations = annotationImageId === selectedImageId ? annotations : [];
+  const latestImageAnnotationSet = visibleAnnotations[visibleAnnotations.length - 1] ?? null;
   const latestApproved = [...visibleAnnotations].reverse().find((set) => set.status === "APPROVED") ?? null;
   const pendingSuggestions = visibleAnnotations.filter((set) => set.source_type === "MODEL" && set.status === "PENDING");
   const activeReviewSet = pendingSuggestions.find((set) => set.annotation_set_id === reviewSetId) ?? null;
@@ -561,6 +563,7 @@ export function App() {
       return [];
     });
     setTestPredictions([]);
+    setTestDatasetSource(null);
     setTestFailures({});
     setTestProgress({ processed: 0, total: 0, running: false, elapsedMs: 0, currentFrom: 0, currentTo: 0, currentImageIndex: null });
     setTestConfidenceThreshold(0.25);
@@ -1145,6 +1148,8 @@ export function App() {
       const poseKeypointSelectShortcut = poseProject && !!editableSet &&
         target?.dataset.poseKeypointSelect === "true" &&
         (matchesShortcut(event, shortcuts, "previousPoint") || matchesShortcut(event, shortcuts, "nextPoint") ||
+          matchesShortcut(event, shortcuts, "poseEditVisible") || matchesShortcut(event, shortcuts, "poseEditOccluded") ||
+          matchesShortcut(event, shortcuts, "poseEditOutside") ||
           matchesShortcut(event, shortcuts, "save"));
       if (activeView !== "workspace" || workspaceSection !== "annotate" || imageSelectorOpen || autoLabelResults ||
           document.querySelector('[role="dialog"][aria-modal="true"]') ||
@@ -1176,11 +1181,43 @@ export function App() {
         return;
       }
       if (editableSet) {
-        if (poseProject && selectedReviewBoxIndex != null &&
-            (matchesShortcut(event, shortcuts, "previousPoint") || matchesShortcut(event, shortcuts, "nextPoint"))) {
-          event.preventDefault();
-          setSelectedPoseKeypointIndex((current) => Math.max(0, Math.min(16,
-            current + (matchesShortcut(event, shortcuts, "previousPoint") ? -1 : 1))));
+        if (poseProject && selectedReviewBoxIndex != null) {
+          if (matchesShortcut(event, shortcuts, "previousPoint") || matchesShortcut(event, shortcuts, "nextPoint")) {
+            event.preventDefault();
+            setSelectedPoseKeypointIndex((current) => Math.max(0, Math.min(16,
+              current + (matchesShortcut(event, shortcuts, "previousPoint") ? -1 : 1))));
+          } else if (matchesShortcut(event, shortcuts, "poseEditVisible")) {
+            event.preventDefault();
+            setPoseEditVisibilityMode("visible");
+          } else if (matchesShortcut(event, shortcuts, "poseEditOccluded")) {
+            event.preventDefault();
+            setPoseEditVisibilityMode("occluded");
+          } else if (matchesShortcut(event, shortcuts, "poseEditOutside")) {
+            event.preventDefault();
+            if (!event.repeat) updateSelectedPoseKeypoint(null, 0);
+          }
+        }
+        return;
+      }
+      if (matchesShortcut(event, shortcuts, "editSavedLabels")) {
+        event.preventDefault();
+        if (event.repeat || !selectedImageId || annotationImageId !== selectedImageId || !latestApproved) return;
+        if (poseCollecting || drawingBox || draftBoxes.length > 0 || annotationSaveState === "saving") {
+          setStatus("Finish or cancel the current label before editing saved labels");
+        } else {
+          startManualEditor();
+        }
+        return;
+      }
+      if (matchesShortcut(event, shortcuts, "verifyCurrentNegative")) {
+        event.preventDefault();
+        if (event.repeat || !selectedImageId || annotationImageId !== selectedImageId) return;
+        if (poseCollecting || drawingBox || draftBoxes.length > 0 || annotationSaveState === "saving") {
+          setStatus("Finish or cancel the current label before verifying this image as negative");
+        } else if (latestImageAnnotationSet?.is_negative) {
+          setStatus("This image is already a verified negative");
+        } else {
+          confirmNegative(selectedImageId);
         }
         return;
       }
@@ -1240,8 +1277,8 @@ export function App() {
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [activeView, autoLabelResults, busy, classes, editableSet, imageSelectorOpen, poseProject, shortcuts, workspaceSection,
-    selectedImageId, images, draftBoxes, annotationImageId, latestApproved, pendingSuggestions,
-    poseCollecting, posePoints.length, selectedClassId, poseVisibilityMode, selectedReviewBoxIndex,
+    selectedImageId, images, draftBoxes, annotationImageId, latestApproved, latestImageAnnotationSet, pendingSuggestions,
+    poseCollecting, posePoints.length, drawingBox, selectedClassId, poseVisibilityMode, selectedReviewBoxIndex, selectedPoseKeypointIndex,
     annotationSaveState, reviewSetId, selectedProjectId, reviewBoxes, editingManualLabels, reviewHistory.length]);
 
   const createAndBuildDataset = (imageIds: number[]) => {
@@ -1362,6 +1399,7 @@ export function App() {
       return;
     }
     setTestImages((current) => [...current, ...added]);
+    setTestDatasetSource((current) => current && !current.includes(" + uploaded images") ? `${current} + uploaded images` : current);
     setTestPredictions((current) => [
       ...Array.from({ length: testImages.length }, (_, index) => current[index] ?? null),
       ...Array<ModelPrediction | null>(added.length).fill(null),
@@ -1380,10 +1418,55 @@ export function App() {
   const clearTestImages = () => {
     testImages.forEach((image) => URL.revokeObjectURL(image.url));
     setTestImages([]);
+    setTestDatasetSource(null);
     setTestPredictions([]);
     setTestFailures({});
     setTestProgress({ processed: 0, total: 0, running: false, elapsedMs: 0, currentFrom: 0, currentTo: 0, currentImageIndex: null });
     setStatus("Cleared test images");
+  };
+
+  const loadDatasetTestImages = (versionId: number) => {
+    const dataset = datasets.find((version) => version.version_id === versionId && version.project_id === selectedProjectId);
+    const testItems = dataset?.items.filter((item) => item.split === "TEST") ?? [];
+    if (!dataset || testItems.length === 0) {
+      setStatus("This dataset version has no test images");
+      return;
+    }
+    if (testImages.length > 0 && !window.confirm(`Replace the ${testImages.length} current test images and results with ${testItems.length} images from Dataset v${dataset.version_number}?`)) return;
+    void runAction("Load dataset test images", async () => {
+      const projectId = selectedProjectId;
+      if (projectId == null) throw new Error("Select a project first");
+      const requestId = projectRequestId.current;
+      const projectImages = await api.listImages(projectId, true);
+      if (requestId !== projectRequestId.current) throw new Error("Project changed while loading test images");
+      const imageById = new Map(projectImages.map((image) => [image.image_id, image]));
+      const missingIds = testItems.filter((item) => !imageById.has(item.image_id)).map((item) => item.image_id);
+      if (missingIds.length > 0) throw new Error(`${missingIds.length} dataset test images are unavailable in this project. Refresh the project and try again.`);
+      const loaded: TestImage[] = [];
+      try {
+        for (let offset = 0; offset < testItems.length; offset += 6) {
+          const batch = testItems.slice(offset, offset + 6);
+          const blobs = await Promise.all(batch.map((item) => api.getImageBlob(imageById.get(item.image_id)!)));
+          if (requestId !== projectRequestId.current) throw new Error("Project changed while loading test images");
+          batch.forEach((item, index) => {
+            const image = imageById.get(item.image_id)!;
+            const file = new File([blobs[index]], image.original_filename || `image-${item.image_id}.jpg`, { type: blobs[index].type || "image/jpeg" });
+            const fingerprint = `dataset:${dataset.version_id}:${item.image_id}`;
+            loaded.push({ key: fingerprint, fingerprint, file, url: URL.createObjectURL(file) });
+          });
+          updateOperationProgress(`Loading ${loaded.length} of ${testItems.length} test images…`, loaded.length, testItems.length);
+        }
+        testImages.forEach((image) => URL.revokeObjectURL(image.url));
+        setTestImages(loaded);
+        setTestDatasetSource(`Dataset v${dataset.version_number} · Test split`);
+        setTestPredictions([]);
+        setTestFailures({});
+        setTestProgress({ processed: 0, total: loaded.length, running: false, elapsedMs: 0, currentFrom: 0, currentTo: 0, currentImageIndex: null });
+      } catch (error) {
+        loaded.forEach((image) => URL.revokeObjectURL(image.url));
+        throw error;
+      }
+    }, { refresh: false, showProgress: true });
   };
 
   const removeTestImage = (imageIndex: number) => {
@@ -1398,6 +1481,7 @@ export function App() {
       }),
     );
     setTestImages(nextImages);
+    if (nextImages.length === 0) setTestDatasetSource(null);
     setTestPredictions(nextPredictions);
     setTestFailures(nextFailures);
     setTestProgress({
@@ -1686,8 +1770,27 @@ export function App() {
 
   const confirmNegative = (imageId: number) => {
     void runAction("Confirm negative image", async () => {
-      await api.confirmNegative(imageId);
-    });
+      const verified = await api.confirmNegative(imageId);
+      if (selectedImageId === imageId && annotationImageId === imageId) {
+        setAnnotations((current) => [
+          ...current.filter((set) => set.annotation_set_id !== verified.annotation_set_id).map((set) =>
+            set.source_type === "MODEL" && set.status === "PENDING" ? { ...set, status: "REJECTED" } : set
+          ),
+          verified,
+        ]);
+      }
+      setImageAnnotationStatuses((current) => [
+        ...current.filter((status) => status.image_id !== imageId),
+        {
+          image_id: imageId,
+          annotation_set_id: verified.annotation_set_id,
+          source_type: "HUMAN",
+          status: "APPROVED",
+          box_count: 0,
+          is_negative: true,
+        },
+      ]);
+    }, { refresh: false });
   };
 
   const reviewAllProjectSuggestions = (mode: "accept" | "reject") => {
@@ -1998,9 +2101,19 @@ export function App() {
             {poseProject && <button className="annotation-primary-action" onClick={startPoseCollection} disabled={!selectedImageId || selectedClassId == null || busy || !!editableSet || poseCollecting} title={`Start a pose (${shortcuts.addPose || "unassigned"}), then click 17 body keypoints`}>
               <Plus size={16} /> Add pose{shortcuts.addPose ? ` · ${shortcuts.addPose}` : ""}
             </button>}
-            {latestApproved && <button onClick={startManualEditor} disabled={busy || !!editableSet || draftBoxes.length > 0 || annotationSaveState === "saving"} title="Edit saved labels">
-              <Settings2 size={16} /> Edit labels
+            {latestApproved && <button onClick={startManualEditor} disabled={busy || !!editableSet || poseCollecting || !!drawingBox || draftBoxes.length > 0 || annotationSaveState === "saving"} title={`Edit saved labels (${shortcuts.editSavedLabels || "unassigned"})`}>
+              <Settings2 size={16} /> Edit labels{shortcuts.editSavedLabels ? ` · ${shortcuts.editSavedLabels}` : ""}
             </button>}
+            {selectedImage && annotationImageId === selectedImageId && latestImageAnnotationSet?.is_negative && (
+              <div className="annotation-negative-status"><Check size={15} /> Verified negative</div>
+            )}
+            {selectedImage && annotationImageId === selectedImageId && !latestImageAnnotationSet?.is_negative && (
+                <button type="button" onClick={() => confirmNegative(selectedImage.image_id)}
+                  disabled={busy || !!editableSet || poseCollecting || drawingBox || draftBoxes.length > 0 || annotationSaveState === "saving"}
+                  title={`Confirm this image has no target objects and clear its active labels (${shortcuts.verifyCurrentNegative || "unassigned"})`}>
+                  <CircleDot size={16} /> Verify negative{shortcuts.verifyCurrentNegative ? ` · ${shortcuts.verifyCurrentNegative}` : ""}
+                </button>
+              )}
             {!poseProject && selectedImage && (
               <div className={`annotation-save-state ${annotationSaveState}`} role="status" aria-live="polite">
                 <span>{annotationSaveState === "saving" ? "Saving labels…" : annotationSaveState === "error" ? "Save failed · labels kept here" :
@@ -2152,11 +2265,11 @@ export function App() {
                     </select>
                   </label>
                   <div className="pose-visibility-toggle" aria-label="Keypoint visibility">
-                    <button className={poseEditVisibilityMode === "visible" ? "active" : ""} onClick={() => setPoseEditVisibilityMode("visible")} type="button">Visible</button>
-                    <button className={poseEditVisibilityMode === "occluded" ? "active" : ""} onClick={() => setPoseEditVisibilityMode("occluded")} type="button">Occluded</button>
-                    <button onClick={() => updateSelectedPoseKeypoint(null, 0)} type="button">Outside frame</button>
+                    <button className={poseEditVisibilityMode === "visible" ? "active" : ""} onClick={() => setPoseEditVisibilityMode("visible")} type="button">Visible{shortcuts.poseEditVisible ? ` · ${shortcuts.poseEditVisible}` : ""}</button>
+                    <button className={poseEditVisibilityMode === "occluded" ? "active" : ""} onClick={() => setPoseEditVisibilityMode("occluded")} type="button">Occluded{shortcuts.poseEditOccluded ? ` · ${shortcuts.poseEditOccluded}` : ""}</button>
+                    <button onClick={() => updateSelectedPoseKeypoint(null, 0)} type="button">Outside frame{shortcuts.poseEditOutside ? ` · ${shortcuts.poseEditOutside}` : ""}</button>
                   </div>
-                  <span className="pose-editor-hint">{shortcuts.previousPoint || "—"} previous · {shortcuts.nextPoint || "—"} next. Click image to move the selected point; it then advances automatically.</span>
+                  <span className="pose-editor-hint">{shortcuts.previousPoint || "—"} previous · {shortcuts.nextPoint || "—"} next. Choose Visible or Occluded, then click the image; Outside frame advances immediately.</span>
                 </div>
               )}
               <button className="danger-button" onClick={deleteSelectedReviewBox} disabled={selectedReviewBoxIndex == null || busy} title={`Delete selected box (${shortcuts.deleteBox || "unassigned"})`}>
@@ -2329,10 +2442,12 @@ export function App() {
 
         {workspaceSection === "test" && <ModelTestWorkspace
           models={models}
+          datasets={datasets}
           projectId={selectedProjectId}
           poseProject={poseProject}
           selectedModelId={selectedTestModelId}
           images={testImages}
+          imageSource={testDatasetSource}
           predictions={testPredictions}
           failures={testFailures}
           progress={testProgress}
@@ -2341,6 +2456,7 @@ export function App() {
           busy={busy}
           onModelChange={changeTestModel}
           onImagesChange={chooseTestImages}
+          onLoadDatasetTest={loadDatasetTestImages}
           onRemoveImage={removeTestImage}
           onClearImages={clearTestImages}
           onThresholdChange={changeTestThreshold}
@@ -2615,6 +2731,32 @@ function ShortcutSettingsModal({ bindings, onChange, onClose }: {
   </div>;
 }
 
+type ImageSelectorFilter = "all" | "labeled" | "needs-drawing" | "negative" | "approved" | "pending" | "rejected";
+
+function matchesImageSelectorFilter(filter: ImageSelectorFilter, status: ImageAnnotationStatus | undefined): boolean {
+  if (filter === "labeled") return !!status && status.box_count > 0 && status.status !== "REJECTED";
+  if (filter === "negative") return status?.is_negative === true;
+  if (filter === "approved") return status?.status === "APPROVED";
+  if (filter === "pending") return status?.status === "PENDING";
+  if (filter === "rejected") return status?.status === "REJECTED";
+  if (filter === "needs-drawing") return !status || (status.box_count === 0 && !status.is_negative);
+  return true;
+}
+
+function filterImageSelectorImages(
+  images: ImageItem[],
+  filter: ImageSelectorFilter,
+  statusByImage: Map<number, ImageAnnotationStatus>,
+): ImageItem[] {
+  const matching = images.filter((image) => matchesImageSelectorFilter(filter, statusByImage.get(image.image_id)));
+  if (filter !== "pending") return matching;
+
+  // Review predictions with boxes first; keep image order within each group.
+  const labeled = matching.filter((image) => (statusByImage.get(image.image_id)?.box_count ?? 0) > 0);
+  const needsDrawing = matching.filter((image) => (statusByImage.get(image.image_id)?.box_count ?? 0) === 0);
+  return [...labeled, ...needsDrawing];
+}
+
 function ImageSelectorModal({
   images,
   selectedImageId,
@@ -2655,7 +2797,7 @@ function ImageSelectorModal({
   const initialStart = Math.floor(selectedIndex / batchSize) * batchSize;
   const [search, setSearch] = useState("");
   const [view, setView] = useState<"browse" | "negative">(initialView);
-  const [filter, setFilter] = useState<"all" | "labeled" | "needs-drawing" | "negative" | "approved" | "pending" | "rejected">("all");
+  const [filter, setFilter] = useState<ImageSelectorFilter>("all");
   const [selectingMultiple, setSelectingMultiple] = useState(false);
   const [selectedPendingImageIds, setSelectedPendingImageIds] = useState<Set<number>>(new Set());
   const [rangeStart, setRangeStart] = useState(initialStart);
@@ -2684,16 +2826,10 @@ function ImageSelectorModal({
     return images.filter((image) => (image.original_filename ?? "").toLowerCase().includes(query));
   }, [images, search]);
   const requestedImageNumber = /^#?\d+$/.test(search.trim()) ? Number(search.trim().replace(/^#/, "")) : null;
-  const filtered = useMemo(() => searched.filter((image) => {
-    const status = statusByImage.get(image.image_id);
-    if (filter === "labeled") return !!status && status.box_count > 0 && status.status !== "REJECTED";
-    if (filter === "negative") return status?.is_negative === true;
-    if (filter === "approved") return status?.status === "APPROVED";
-    if (filter === "pending") return status?.status === "PENDING";
-    if (filter === "rejected") return status?.status === "REJECTED";
-    if (filter === "needs-drawing") return !status || (status.box_count === 0 && !status.is_negative);
-    return true;
-  }), [filter, searched, statusByImage]);
+  const filtered = useMemo(() =>
+    filterImageSelectorImages(searched, filter, statusByImage),
+    [filter, searched, statusByImage],
+  );
   const filterCounts = useMemo(() => ({
     all: images.length,
     labeled: images.filter((image) => { const status = statusByImage.get(image.image_id); return !!status && status.box_count > 0 && status.status !== "REJECTED"; }).length,
@@ -2751,7 +2887,7 @@ function ImageSelectorModal({
       window.cancelAnimationFrame(firstFrame);
       window.cancelAnimationFrame(secondFrame);
     };
-  }, [selectedImageId, view]);
+  }, [selectedImageId, view, filter]);
 
   useEffect(() => {
     const root = gridRef.current;
@@ -2793,10 +2929,13 @@ function ImageSelectorModal({
     setRangeEnd(Math.min(batchSize, images.length));
   };
 
-  const updateFilter = (value: typeof filter) => {
+  const updateFilter = (value: ImageSelectorFilter) => {
+    const nextFiltered = filterImageSelectorImages(searched, value, statusByImage);
+    const currentIndex = nextFiltered.findIndex((image) => image.image_id === selectedImageId);
+    const start = currentIndex >= 0 ? Math.floor(currentIndex / batchSize) * batchSize : 0;
     setFilter(value);
-    setRangeStart(0);
-    setRangeEnd(Math.min(batchSize, images.length));
+    setRangeStart(start);
+    setRangeEnd(Math.min(nextFiltered.length, start + batchSize));
   };
 
   const startMultipleSelection = () => {
@@ -3588,10 +3727,12 @@ function ImageSelectorPreview({
 
 function ModelTestWorkspace({
   models,
+  datasets,
   projectId,
   poseProject,
   selectedModelId,
   images,
+  imageSource,
   predictions,
   failures,
   progress,
@@ -3600,16 +3741,19 @@ function ModelTestWorkspace({
   busy,
   onModelChange,
   onImagesChange,
+  onLoadDatasetTest,
   onRemoveImage,
   onClearImages,
   onThresholdChange,
   onRun,
 }: {
   models: ModelItem[];
+  datasets: DatasetVersion[];
   projectId: number | null;
   poseProject: boolean;
   selectedModelId: number | "pose-pretrained" | null;
   images: TestImage[];
+  imageSource: string | null;
   predictions: (ModelPrediction | null)[];
   failures: Record<number, string>;
   progress: TestRunProgress;
@@ -3618,6 +3762,7 @@ function ModelTestWorkspace({
   busy: boolean;
   onModelChange: (modelId: number | "pose-pretrained" | null) => void;
   onImagesChange: (files: FileList | null) => void;
+  onLoadDatasetTest: (versionId: number) => void;
   onRemoveImage: (imageIndex: number) => void;
   onClearImages: () => void;
   onThresholdChange: (value: number) => void;
@@ -3627,6 +3772,7 @@ function ModelTestWorkspace({
   const [testResultFilter, setTestResultFilter] = useState<TestResultFilter>("all");
   const [isTestFilterMenuOpen, setIsTestFilterMenuOpen] = useState(false);
   const [isFileDragActive, setIsFileDragActive] = useState(false);
+  const [chosenDatasetVersionId, setChosenDatasetVersionId] = useState<number | null>(null);
   const testResultsRef = useRef<HTMLDivElement | null>(null);
   const testLoadMoreRef = useRef<HTMLDivElement | null>(null);
   const testFilterMenuRef = useRef<HTMLDivElement | null>(null);
@@ -3635,6 +3781,12 @@ function ModelTestWorkspace({
     () => models.filter((model) => model.project_id === projectId),
     [models, projectId],
   );
+  const datasetTestVersions = datasets
+    .filter((dataset) => dataset.project_id === projectId && dataset.items.some((item) => item.split === "TEST"))
+    .sort((left, right) => left.version_number - right.version_number);
+  const activeDatasetVersionId = datasetTestVersions.some((dataset) => dataset.version_id === chosenDatasetVersionId)
+    ? chosenDatasetVersionId
+    : datasetTestVersions[datasetTestVersions.length - 1]?.version_id ?? null;
   const selectedModel = typeof selectedModelId === "number"
     ? projectModels.find((model) => model.model_id === selectedModelId) ?? null
     : null;
@@ -3764,6 +3916,28 @@ function ModelTestWorkspace({
         }}
       >
         <div className="test-controls">
+          <div className="test-dataset-source">
+            <div>
+              <strong>Use saved dataset test split</strong>
+              <span>These images are held out from training. Loading them replaces the current test list, but does not change the dataset.</span>
+            </div>
+            <select
+              aria-label="Dataset version for test images"
+              value={activeDatasetVersionId ?? ""}
+              onChange={(event) => setChosenDatasetVersionId(Number(event.target.value))}
+              disabled={busy || datasetTestVersions.length === 0}
+            >
+              {datasetTestVersions.length === 0 && <option value="">No dataset test split yet</option>}
+              {datasetTestVersions.map((dataset) => (
+                <option key={dataset.version_id} value={dataset.version_id}>
+                  Dataset v{dataset.version_number} · {dataset.items.filter((item) => item.split === "TEST").length} test images
+                </option>
+              ))}
+            </select>
+            <button type="button" onClick={() => activeDatasetVersionId != null && onLoadDatasetTest(activeDatasetVersionId)} disabled={busy || activeDatasetVersionId == null}>
+              <Database size={16} /> Load test split
+            </button>
+          </div>
           <div className="test-toolbar">
             <label className="file-button">
             <Upload size={16} /> {images.length > 0 ? "Add images" : "Choose test images"}
@@ -3815,6 +3989,7 @@ function ModelTestWorkspace({
               {hasTestResults && untestedCount === 0 ? <RotateCcw size={16} /> : <Play size={16} />} {runButtonLabel}
             </button>
           </div>
+          {imageSource && images.length > 0 && <div className="test-source-caption">Current images: {imageSource} · {images.length} images</div>}
           {images.length > 0 && (
             <div className="test-results-header">
               <div className="test-results-title">
@@ -4107,8 +4282,19 @@ function DatasetSelectionModal({
   const [filter, setFilter] = useState<"all" | "manual" | "model" | "negative">("all");
   const [sampleSize, setSampleSize] = useState(200);
   const [visibleCount, setVisibleCount] = useState(24);
+  const [dragSelectEnabled, setDragSelectEnabled] = useState(false);
   const gridRef = useRef<HTMLDivElement | null>(null);
   const loadMoreRef = useRef<HTMLDivElement | null>(null);
+  const dragSelection = useRef<{
+    pointerId: number;
+    startIndex: number;
+    endIndex: number;
+    selecting: boolean;
+    before: Set<number>;
+    x: number;
+    y: number;
+    frame: number | null;
+  } | null>(null);
   const manualCandidates = candidates.filter(({ status }) => status.source_type !== "MODEL" && !status.is_negative);
   const modelCandidates = candidates.filter(({ status }) => status.source_type === "MODEL" && !status.is_negative);
   const filtered = candidates.filter(({ image, status }) => (
@@ -4143,6 +4329,10 @@ function DatasetSelectionModal({
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [busy, onClose]);
 
+  useEffect(() => () => {
+    if (dragSelection.current?.frame != null) window.cancelAnimationFrame(dragSelection.current.frame);
+  }, []);
+
   const toggleImage = (imageId: number) => {
     setSelectedIds((current) => {
       const next = new Set(current);
@@ -4150,6 +4340,74 @@ function DatasetSelectionModal({
       else next.add(imageId);
       return next;
     });
+  };
+  const startDragSelection = (event: PointerEvent<HTMLLabelElement>, index: number) => {
+    if (!dragSelectEnabled || busy || event.button !== 0 || (event.target as HTMLElement).closest("input")) return;
+    event.preventDefault();
+    const grid = gridRef.current;
+    if (!grid) return;
+    const imageId = filtered[index].image.image_id;
+    const selecting = !selectedIds.has(imageId);
+    const before = new Set(selectedIds);
+    const session = { pointerId: event.pointerId, startIndex: index, endIndex: index,
+      selecting, before, x: event.clientX, y: event.clientY, frame: null as number | null };
+    dragSelection.current = session;
+    setSelectedIds((current) => {
+      const next = new Set(current);
+      if (selecting) next.add(imageId);
+      else next.delete(imageId);
+      return next;
+    });
+    grid.setPointerCapture(event.pointerId);
+
+    const tick = () => {
+      if (dragSelection.current !== session) return;
+      const bounds = grid.getBoundingClientRect();
+      const edge = 60;
+      const speed = session.y < bounds.top + edge
+        ? -Math.min(24, Math.max(0, bounds.top + edge - session.y) * 0.4)
+        : session.y > bounds.bottom - edge
+          ? Math.min(24, Math.max(0, session.y - (bounds.bottom - edge)) * 0.4)
+          : 0;
+      if (speed) grid.scrollTop += speed;
+      const hit = document.elementFromPoint(session.x, Math.max(bounds.top + 20, Math.min(bounds.bottom - 20, session.y)));
+      let card = hit?.closest<HTMLElement>("[data-dataset-index]");
+      if (!card && speed) {
+        const inView = Array.from(grid.querySelectorAll<HTMLElement>("[data-dataset-index]"))
+          .filter((item) => item.getBoundingClientRect().bottom > bounds.top && item.getBoundingClientRect().top < bounds.bottom);
+        card = speed > 0 ? inView[inView.length - 1] : inView[0];
+      }
+      if (card && grid.contains(card)) {
+        const endIndex = Number(card.dataset.datasetIndex);
+        if (Number.isInteger(endIndex) && endIndex !== session.endIndex) {
+          session.endIndex = endIndex;
+          const next = new Set(session.before);
+          for (let position = Math.min(session.startIndex, endIndex); position <= Math.max(session.startIndex, endIndex); position += 1) {
+            const id = filtered[position]?.image.image_id;
+            if (id != null) {
+              if (session.selecting) next.add(id);
+              else next.delete(id);
+            }
+          }
+          setSelectedIds(next);
+        }
+      }
+      session.frame = window.requestAnimationFrame(tick);
+    };
+    session.frame = window.requestAnimationFrame(tick);
+  };
+  const stopDragSelection = (event: PointerEvent<HTMLDivElement>) => {
+    const session = dragSelection.current;
+    if (!session || session.pointerId !== event.pointerId) return;
+    if (session.frame != null) window.cancelAnimationFrame(session.frame);
+    dragSelection.current = null;
+    if (gridRef.current?.hasPointerCapture(event.pointerId)) gridRef.current.releasePointerCapture(event.pointerId);
+  };
+  const moveDragSelection = (event: PointerEvent<HTMLDivElement>) => {
+    const session = dragSelection.current;
+    if (!session || session.pointerId !== event.pointerId) return;
+    session.x = event.clientX;
+    session.y = event.clientY;
   };
   const addSample = () => {
     const pool = modelCandidates.filter(({ image }) => !selectedIds.has(image.image_id));
@@ -4187,10 +4445,16 @@ function DatasetSelectionModal({
             visible.forEach(({ image }) => allShownSelected ? next.delete(image.image_id) : next.add(image.image_id));
             return next;
           })} /> Select shown ({visible.length})</label>
+          <button type="button" className={dragSelectEnabled ? "active" : ""} aria-pressed={dragSelectEnabled} disabled={busy}
+            onClick={() => setDragSelectEnabled((current) => !current)}>Drag select {dragSelectEnabled ? "On" : "Off"}</button>
         </div>
+        {dragSelectEnabled && <small className="dataset-drag-hint">Clear first to pick a few frame ranges. Drag across images, release, skip similar frames, then drag again. Start on a selected image to remove a range; hold near an edge to scroll.</small>}
       </div>
-      <div className="dataset-selection-grid" ref={gridRef}>
-        {visible.map(({ image, status }) => <label className={`dataset-image-item${selectedIds.has(image.image_id) ? " selected" : ""}`} key={image.image_id}>
+      <div className={`dataset-selection-grid${dragSelectEnabled ? " drag-select-enabled" : ""}`} ref={gridRef}
+        onPointerMove={moveDragSelection} onPointerUp={stopDragSelection} onPointerCancel={stopDragSelection}>
+        {visible.map(({ image, status }, index) => <label className={`dataset-image-item${selectedIds.has(image.image_id) ? " selected" : ""}`} key={image.image_id}
+          data-dataset-index={index} onPointerDown={(event) => startDragSelection(event, index)}
+          onClick={(event) => { if (dragSelectEnabled && !(event.target as HTMLElement).closest("input")) event.preventDefault(); }}>
           <div className="dataset-image-preview"><DatasetAnnotationPreview image={image} annotationSetId={status.annotation_set_id} classColors={classColors} /><input type="checkbox" checked={selectedIds.has(image.image_id)} onChange={() => toggleImage(image.image_id)} disabled={busy} aria-label={`Include ${image.original_filename ?? image.image_id}`} /></div>
           <div className="dataset-image-meta"><strong title={image.original_filename ?? ""}>{image.original_filename ?? `Image ${image.image_id}`}</strong><span>{status.is_negative ? "Verified negative · 0 boxes" : `${status.source_type === "MODEL" ? "Auto label" : "Manual label"} · ${status.box_count} ${status.box_count === 1 ? "box" : "boxes"}`}</span></div>
         </label>)}

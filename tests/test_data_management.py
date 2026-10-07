@@ -4,7 +4,9 @@ from zipfile import ZipFile
 from fastapi.testclient import TestClient
 from PIL import Image as PILImage
 
+from app.core.database.session import SessionLocal
 from app.main import app
+from app.modules.auto_label.repository import AutoLabelRepository
 
 
 client = TestClient(app)
@@ -321,10 +323,16 @@ def test_dataset_version_excludes_approved_images_without_labels():
     assert subset.status_code == 200, subset.text
     assert [item["image_id"] for item in subset.json()["items"]] == [empty_image["image_id"]]
     assert subset.json()["items"][0]["annotation_set_id"] == added_label.json()["annotation_set_id"]
-    cannot_mark_labeled_negative = client.post(
+    marked_negative = client.post(
         f"/annotations/images/{empty_image['image_id']}/confirm-negative", headers=headers,
     )
-    assert cannot_mark_labeled_negative.status_code == 409
+    assert marked_negative.status_code == 200, marked_negative.text
+    assert marked_negative.json()["is_negative"] is True
+    assert marked_negative.json()["annotations"] == []
+    history = client.get(f"/annotations/images/{empty_image['image_id']}/annotation-sets", headers=headers)
+    assert history.status_code == 200, history.text
+    assert len(history.json()[-2]["annotations"]) == 1
+    assert history.json()[-1]["is_negative"] is True
 
 
 def test_verified_negative_enters_dataset_with_empty_yolo_label():
@@ -375,6 +383,48 @@ def test_verified_negative_enters_dataset_with_empty_yolo_label():
         label_files = [name for name in archive.namelist() if name.startswith("labels/") and name.endswith(".txt")]
         assert len(label_files) == 1
         assert archive.read(label_files[0]) == b""
+
+
+def test_verifying_negative_clears_pending_boxes_without_erasing_history():
+    headers = _register("negative-with-boxes")
+    project = client.post(
+        "/projects", headers=headers,
+        json={"name": "Negative with boxes", "task_type": "OBJECT_DETECTION"},
+    ).json()
+    label_class = client.post(
+        "/classes", headers=headers,
+        json={"project_id": project["project_id"], "name": "object", "class_index": 0, "color": "#16a34a"},
+    ).json()
+    image = client.post(
+        f"/images/upload?project_id={project['project_id']}", headers=headers,
+        files={"file": ("false-positive.png", _png_bytes(), "image/png")},
+    ).json()
+    image_id = image["image_id"]
+    with SessionLocal() as db:
+        suggestions = [AutoLabelRepository(db).create_model_suggestion(
+            image_id=image_id,
+            model_id=None,
+            boxes=[{
+                "class_id": label_class["class_id"],
+                "x_min": 0.1, "y_min": 0.1, "x_max": 0.9, "y_max": 0.9,
+                "confidence": 0.8,
+            }],
+        ) for _ in range(2)]
+        pending_ids = [item.annotation_set_id for item in suggestions]
+        db.commit()
+
+    confirmed = client.post(f"/annotations/images/{image_id}/confirm-negative", headers=headers)
+    assert confirmed.status_code == 200, confirmed.text
+    assert confirmed.json()["is_negative"] is True
+    assert confirmed.json()["annotations"] == []
+
+    history = client.get(f"/annotations/images/{image_id}/annotation-sets", headers=headers)
+    assert history.status_code == 200, history.text
+    assert [item["status"] for item in history.json() if item["annotation_set_id"] in pending_ids] == [
+        "REJECTED", "REJECTED",
+    ]
+    assert all(item["annotations"] for item in history.json() if item["annotation_set_id"] in pending_ids)
+    assert history.json()[-1]["annotation_set_id"] == confirmed.json()["annotation_set_id"]
 
 
 def test_class_name_and_color_can_be_updated_without_changing_index():

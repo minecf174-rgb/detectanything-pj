@@ -2,7 +2,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from fastapi import BackgroundTasks, HTTPException
-from sqlalchemy import and_, or_, select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.orm import Session, selectinload
 
 from app.core.authz import require_project_owner
@@ -60,12 +60,28 @@ class AutoLabelService:
 
         target_image_ids = unique_image_ids
         if data.only_unlabeled:
+            latest_revisions = (
+                select(
+                    AnnotationSet.image_id,
+                    func.max(AnnotationSet.revision).label("revision"),
+                )
+                .where(AnnotationSet.image_id.in_(unique_image_ids))
+                .group_by(AnnotationSet.image_id)
+                .subquery()
+            )
             unavailable_ids = set(
                 self.db.scalars(
                     select(AnnotationSet.image_id)
+                    .join(
+                        latest_revisions,
+                        and_(
+                            AnnotationSet.image_id == latest_revisions.c.image_id,
+                            AnnotationSet.revision == latest_revisions.c.revision,
+                        ),
+                    )
                     .where(
-                        AnnotationSet.image_id.in_(unique_image_ids),
                         or_(
+                            AnnotationSet.is_negative.is_(True),
                             and_(
                                 AnnotationSet.status == "APPROVED",
                                 AnnotationSet.annotations.any(),
