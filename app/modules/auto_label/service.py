@@ -32,8 +32,8 @@ class AutoLabelService:
         if data.base_model is not None:
             if project is None or project.task_type != "POSE_ESTIMATION":
                 raise HTTPException(status_code=400, detail="Pretrained pose auto-label is only available for pose projects")
-            if not self._pretrained_pose_path().exists():
-                raise HTTPException(status_code=404, detail="YOLO26 pose pretrained weights are not installed")
+            if not self._pretrained_pose_path(data.base_model).exists():
+                raise HTTPException(status_code=404, detail=f"Pretrained weights {data.base_model} are not installed")
         else:
             model = self.db.get(Model, data.model_id)
             if model is None or model.deleted_at is not None:
@@ -365,15 +365,15 @@ class AutoLabelService:
         return predictions
 
     def _job_model_path(self, job) -> Path:
-        if job.base_model == "yolo26n-pose.pt":
-            return self._pretrained_pose_path()
+        if job.base_model in {"yolo26n-pose.pt", "yolo26x-pose.pt"}:
+            return self._pretrained_pose_path(job.base_model)
         model = self.db.get(Model, job.model_id)
         if model is None or model.deleted_at is not None:
             raise HTTPException(status_code=404, detail="Model not found")
         return Path(self.storage_root) / model.weights_object_key
 
-    def _pretrained_pose_path(self) -> Path:
-        return Path(__file__).resolve().parents[3] / "yolo26n-pose.pt"
+    def _pretrained_pose_path(self, base_model: str) -> Path:
+        return Path(__file__).resolve().parents[3] / base_model
 
     def list_project_jobs(self, project_id: int, current_user: User):
         require_project_owner(self.db, current_user, project_id)

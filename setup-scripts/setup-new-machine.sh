@@ -18,7 +18,7 @@ echo "========================================="
 echo " Detect Anything - New Machine Setup"
 echo "========================================="
 
-[[ -f "$ROOT_DIR/pyproject.toml" && -f "$ROOT_DIR/alembic.ini" && -f "$ROOT_DIR/frontend/package-lock.json" ]] \
+[[ -f "$ROOT_DIR/pyproject.toml" && -f "$ROOT_DIR/alembic.ini" && -f "$ROOT_DIR/.env.example" && -f "$ROOT_DIR/frontend/package-lock.json" ]] \
     || fail "Project files are missing. Run this script from a complete project checkout."
 
 command -v git >/dev/null 2>&1 || fail "Git is required to install the Python dependencies."
@@ -114,6 +114,18 @@ echo "npm: $(npm --version)"
 echo
 
 if [[ "${1:-}" == "--check" ]]; then
+    if [[ -f "$ROOT_DIR/.env" ]]; then
+        echo "Environment: existing root .env will be preserved."
+    else
+        echo "Environment: root .env will be created with a unique JWT secret."
+    fi
+    for optional_tool in screen ngrok; do
+        if command -v "$optional_tool" >/dev/null 2>&1; then
+            echo "Optional public-start tool: $optional_tool found."
+        else
+            echo "Optional public-start tool: $optional_tool missing (local development still works)."
+        fi
+    done
     echo "Check complete; no packages installed and no database changes made."
     exit 0
 fi
@@ -132,7 +144,45 @@ echo "Installing frontend packages from package-lock.json..."
 (
     cd "$ROOT_DIR/frontend"
     npm ci
+    npm run build
 )
+
+echo
+echo "Preparing root .env for the local API and Vite proxy..."
+"$PYTHON" - <<'PY'
+import os
+import secrets
+from pathlib import Path
+
+example = Path(".env.example")
+target = Path(".env")
+placeholder = "AUTH_JWT_SECRET=replace-with-a-long-random-secret-before-deployment"
+
+if target.exists():
+    print("Existing .env preserved; setup will not overwrite project settings or secrets.")
+else:
+    template = example.read_text(encoding="utf-8")
+    if template.count(placeholder) != 1:
+        raise SystemExit("ERROR: .env.example must contain exactly one JWT secret placeholder.")
+    contents = template.replace(placeholder, f"AUTH_JWT_SECRET={secrets.token_urlsafe(48)}")
+    try:
+        fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    except FileExistsError:
+        print("Another process created .env; preserving that file.")
+    else:
+        with os.fdopen(fd, "w", encoding="utf-8") as output:
+            output.write(contents)
+        print("Created .env with a unique JWT secret (secret not displayed).")
+
+from app.core.config.settings import get_settings
+
+secret = get_settings().auth_jwt_secret.strip()
+if len(secret) < 32 or secret in {
+    "change-this-development-secret-before-deployment",
+    "replace-with-a-long-random-secret-before-deployment",
+}:
+    print("WARNING: AUTH_JWT_SECRET is still a placeholder or too short. Local use works, but start-scripts.sh will refuse to open a public tunnel until you set a unique secret.")
+PY
 
 echo
 echo "Installing default YOLO26 detection and pose weights..."
@@ -148,6 +198,7 @@ if not _SafeLoad.SUPPORTED:
 
 for filename, expected_task in (
     ("yolo26n-pose.pt", "pose"),
+    ("yolo26x-pose.pt", "pose"),
     ("yolo26s.pt", "detect"),
 ):
     weights = Path.cwd() / filename
@@ -207,6 +258,7 @@ echo
 echo "Applying database migrations..."
 "$PYTHON" -m alembic upgrade head
 "$PYTHON" -m alembic current
+"$PYTHON" -c 'from app.main import app; print(f"Backend import OK: {app.title}")'
 
 echo
 echo "========================================="
@@ -214,4 +266,9 @@ echo " New machine setup completed"
 echo "========================================="
 echo "Backend:  source venv/bin/activate && uvicorn app.main:app --reload --host 127.0.0.1 --port 8000"
 echo "Frontend: cd frontend && npm run dev"
-echo "For public access, configure AUTH_JWT_SECRET and tunnel settings in the root .env first."
+if command -v screen >/dev/null 2>&1 && command -v ngrok >/dev/null 2>&1; then
+    echo "Public test link: after authenticating ngrok, run bash start-scripts.sh"
+else
+    echo "Public test link (optional): install GNU screen and ngrok, authenticate ngrok, then run bash start-scripts.sh"
+fi
+echo "The public starter will check AUTH_JWT_SECRET; existing .env files are never overwritten."

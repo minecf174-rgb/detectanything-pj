@@ -26,7 +26,7 @@ class AutoLabelItemStatus(StrEnum):
 class AutoLabelJobCreate(BaseModel):
     project_id: int
     model_id: int | None = None
-    base_model: Literal["yolo26n-pose.pt"] | None = None
+    base_model: Literal["yolo26n-pose.pt", "yolo26x-pose.pt"] | None = None
     image_ids: list[int] = Field(min_length=1)
     confidence_threshold: float = Field(default=0.25, ge=0, le=1)
     max_predictions_per_image: int | None = Field(default=20, ge=1, le=300)

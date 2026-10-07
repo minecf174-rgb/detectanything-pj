@@ -17,7 +17,7 @@
 - รูปและ dataset ที่อัปโหลดใน `storage/projects/`
 - โมเดลที่เทรนแล้วใน `storage/models/`
 - ผลลัพธ์ใน `temp/` และ `runs/`
-- pretrained weights เช่น `yolo26n-pose.pt`
+- pretrained weights เช่น `yolo26n-pose.pt` และ `yolo26x-pose.pt`
 - `venv`, `node_modules`, frontend build และ cache
 - `.env` ซึ่งมี secret ของแต่ละเครื่อง
 - ไฟล์ backup ภายใน `backups/`
@@ -47,7 +47,7 @@ git clone <repository-url>
 cd "detect anything"
 ```
 
-สำหรับ local development สามารถข้ามการสร้าง `.env` ได้ เพราะ Backend มีค่า default สำหรับ SQLite, storage, temp และ CORS อยู่แล้ว
+ถ้าใช้ `setup-new-machine.sh` สคริปต์จะสร้าง root `.env` พร้อม JWT secret แบบสุ่มให้เมื่อยังไม่มีไฟล์ และจะรักษา `.env` เดิมไว้ หากติดตั้งด้วยมือ สำหรับ local development สามารถข้ามการสร้าง `.env` ได้ เพราะ Backend มีค่า default สำหรับ SQLite, storage, temp และ CORS อยู่แล้ว
 
 หากต้องการเปลี่ยน config หรือเตรียม deploy ให้สร้าง `.env`:
 
@@ -85,13 +85,13 @@ python -m pip install -e ".[dev]"
 
 การติดตั้ง ML dependencies อาจใช้เวลานาน เพราะมี PyTorch, Ultralytics, SAM และ OpenCV
 
-ดาวน์โหลด pretrained pose weight ที่หน้า Auto label และ Test model ต้องใช้:
+ดาวน์โหลด pretrained pose weights: หน้า Auto label ใช้รุ่น Extra Large (`x`) ส่วนหน้า Test pretrained และการเทรนค่าเริ่มต้นใช้ Nano (`n`):
 
 ```bash
-python -c 'from ultralytics import YOLO; YOLO("yolo26n-pose.pt")'
+python -c 'from ultralytics import YOLO; YOLO("yolo26x-pose.pt"); YOLO("yolo26n-pose.pt")'
 ```
 
-คำสั่งนี้ต้องสร้าง `yolo26n-pose.pt` ไว้ที่ root ของโปรเจกต์ ไฟล์ดังกล่าวถูก ignore และจะไม่ขึ้น Git
+คำสั่งนี้ต้องสร้าง `yolo26x-pose.pt` และ `yolo26n-pose.pt` ไว้ที่ root ของโปรเจกต์ ไฟล์ทั้งสองถูก ignore และจะไม่ขึ้น Git
 
 ## 3. สร้างฐานข้อมูลใหม่
 
@@ -117,7 +117,7 @@ cd frontend
 npm ci
 ```
 
-`npm ci` จะติดตั้งตาม `package-lock.json` เพื่อให้เวอร์ชันใกล้เคียงกับเครื่องเดิม
+`npm ci` จะติดตั้งตาม `package-lock.json` เพื่อให้เวอร์ชันใกล้เคียงกับเครื่องเดิม; setup script จะรัน `npm run build` ตรวจ frontend ให้ด้วย
 
 ## 5. รันระบบ
 

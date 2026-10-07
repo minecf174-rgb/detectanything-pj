@@ -1,13 +1,27 @@
 from io import BytesIO
 from pathlib import Path
+from types import SimpleNamespace
 
 from fastapi.testclient import TestClient
 from PIL import Image as PILImage
 
 from app.main import app
+from app.modules.auto_label.schemas import AutoLabelJobCreate
+from app.modules.auto_label.service import AutoLabelService
 
 
 client = TestClient(app)
+
+
+def test_pose_auto_label_accepts_extra_large_and_keeps_nano_jobs_compatible():
+    for filename in ("yolo26x-pose.pt", "yolo26n-pose.pt"):
+        payload = AutoLabelJobCreate(project_id=1, base_model=filename, image_ids=[1])
+        assert payload.base_model == filename
+        path = AutoLabelService._job_model_path(
+            object.__new__(AutoLabelService),
+            SimpleNamespace(base_model=filename, model_id=None),
+        )
+        assert path.name == filename
 
 
 def register_pose_user() -> dict:

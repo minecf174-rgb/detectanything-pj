@@ -1620,7 +1620,7 @@ export function App() {
   const showAutoLabelResults = async (job: AutoLabelJob) => {
     const sourceModel = models.find((model) => model.model_id === job.model_id);
     setAutoLabelResultsModelName(job.base_model
-      ? "YOLO26 Pose pretrained"
+      ? job.base_model === "yolo26x-pose.pt" ? "YOLO26 Pose Extra Large pretrained" : "YOLO26 Pose Nano pretrained"
       : sourceModel ? `Model v${sourceModel.version}` : `Model #${job.model_id}`);
     const resultItems = await Promise.all(job.items.map(async (item) => {
       const image = images.find((candidate) => candidate.image_id === item.image_id);
@@ -1655,7 +1655,7 @@ export function App() {
       const job = await api.createAutoLabelJob({
         project_id: selectedProjectId,
         model_id: selectedModel?.model_id ?? null,
-        base_model: selectedAutoLabelModelId === "pose-pretrained" ? "yolo26n-pose.pt" : null,
+        base_model: selectedAutoLabelModelId === "pose-pretrained" ? "yolo26x-pose.pt" : null,
         image_ids: images.map((image) => image.image_id),
         confidence_threshold: confidenceThreshold,
         max_predictions_per_image: 3,
@@ -2318,7 +2318,7 @@ export function App() {
                 )}
                 disabled={busy || (!poseProject && models.length === 0)}
               >
-                {poseProject && <option value="pose-pretrained">YOLO26 Pose pretrained (label assist)</option>}
+                {poseProject && <option value="pose-pretrained">YOLO26 Pose Extra Large pretrained (label assist)</option>}
                 {!poseProject && models.length === 0 && <option value="">No model available</option>}
                 {[...models].reverse().map((model) => (
                   <option value={model.model_id} key={model.model_id}>
@@ -2477,7 +2477,7 @@ export function App() {
       {autoLabelSettingsOpen && (
         <AutoLabelSettingsModal
           modelName={selectedAutoLabelModelId === "pose-pretrained"
-            ? "YOLO26 Pose pretrained"
+            ? "YOLO26 Pose Extra Large pretrained"
             : `Model v${models.find((model) => model.model_id === selectedAutoLabelModelId)?.version ?? "?"}`}
           imageCount={images.length}
           confidence={autoLabelConfidenceInput}
@@ -3965,7 +3965,7 @@ function ModelTestWorkspace({
               disabled={busy}
             >
               <option value="">Choose a model</option>
-              {poseProject && <option value="pose-pretrained">YOLO26 Pose pretrained (base)</option>}
+              {poseProject && <option value="pose-pretrained">YOLO26 Pose Nano pretrained (base)</option>}
               {[...projectModels].reverse().map((model) => (
                 <option key={model.model_id} value={model.model_id}>
                   Model v{model.version} · {model.source_type === "IMPORTED" ? "Imported" : `mAP50 ${formatMetric(model.map50)}`}
@@ -4067,7 +4067,7 @@ function ModelTestWorkspace({
 
       <aside className="rightbar test-sidebar">
         <Panel title="Test run">
-          <Metric label="Model" value={selectedModelId === "pose-pretrained" ? "Pose base" : selectedModel ? `v${selectedModel.version}` : "-"} />
+          <Metric label="Model" value={selectedModelId === "pose-pretrained" ? "Pose Nano base" : selectedModel ? `v${selectedModel.version}` : "-"} />
           <Metric label="Threshold" value={confidenceThreshold.toFixed(2)} />
           <Metric label="Images" value={images.length} />
           {progress.total > 0 && <div className="test-progress" aria-label={`Processed ${progress.processed} of ${progress.total} images`}>

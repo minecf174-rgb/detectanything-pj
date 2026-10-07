@@ -38,7 +38,7 @@ cd "detect anything"
 bash setup-scripts/setup-new-machine.sh
 ```
 
-สคริปต์ตรวจระบบและ GPU แล้วเลือก PyTorch ที่เหมาะสม ติดตั้ง Backend ใน `venv/`, ติดตั้ง Frontend ด้วย `npm ci`, ดาวน์โหลดและตรวจ `yolo26n-pose.pt` กับ `yolo26s.pt` ที่ root โปรเจกต์ แล้วสำรอง SQLite เดิมก่อนทำ `alembic upgrade head` ต้องมี Git, Python 3.11/3.12, Node.js 20+ และ npm อยู่ก่อน; สคริปต์จะแจ้งหากขาดอย่างใดอย่างหนึ่ง และไม่เขียนทับ `.env` หากใช้สคริปต์นี้แล้วข้ามขั้นตอนติดตั้ง 2-5 ด้านล่างได้สำหรับโมเดลค่าเริ่มต้น รุ่นอื่นที่เลือกเทรนจะดาวน์โหลดเมื่อใช้งาน
+สคริปต์ตรวจระบบและ GPU แล้วเลือก PyTorch ที่เหมาะสม ติดตั้ง Backend ใน `venv/`, ติดตั้ง Frontend ด้วย `npm ci` และตรวจ `npm run build`, ดาวน์โหลดและตรวจ `yolo26n-pose.pt`, `yolo26x-pose.pt` และ `yolo26s.pt` ที่ root โปรเจกต์ จากนั้นสำรอง SQLite เดิมก่อนทำ `alembic upgrade head` ต้องมี Git, Python 3.11/3.12, Node.js 20+ และ npm อยู่ก่อน ถ้ายังไม่มี root `.env` สคริปต์จะสร้างจาก `.env.example` พร้อม JWT secret แบบสุ่มโดยไม่แสดง secret; ถ้ามีอยู่แล้วจะไม่เขียนทับ หากใช้สคริปต์นี้แล้วข้ามขั้นตอนติดตั้ง 2-5 ด้านล่างได้สำหรับโมเดลค่าเริ่มต้น รุ่นอื่นที่เลือกเทรนจะดาวน์โหลดเมื่อใช้งาน
 
 ตรวจว่าเครื่องจะใช้ทางเลือกใดโดยไม่ติดตั้งหรือแก้ฐานข้อมูลได้ด้วย `bash setup-scripts/setup-new-machine.sh --check`
 
@@ -64,7 +64,7 @@ alembic current
 
 `alembic upgrade head` จะสร้าง `cv_platform.sqlite3` และตารางตาม migration ล่าสุด ไม่ต้องสร้างตารางเอง โฟลเดอร์ `storage/projects`, `storage/models`, `temp/training` และ `temp/auto_label` มี `.gitkeep` อยู่แล้ว ระบบจะเก็บไฟล์งานในโฟลเดอร์เหล่านี้
 
-**ไม่จำเป็นต้องสร้าง `.env` สำหรับการรันบนเครื่องตัวเอง**: backend มีค่า default สำหรับ SQLite, storage, temp, CORS และ local authentication อยู่แล้ว ถ้าต้องการเปลี่ยนค่า ให้คัดลอก `.env.example` เป็น `.env` และเปลี่ยน `AUTH_JWT_SECRET` เป็นค่าสุ่มใหม่ก่อนเปิดให้เครื่องอื่นเข้าใช้:
+**ถ้าใช้ `setup-new-machine.sh` จะได้ `.env` ที่มี JWT secret แบบสุ่มแล้ว** และสคริปต์ไม่เขียนทับไฟล์เดิม หากติดตั้งด้วยมือ การรัน local ไม่จำเป็นต้องมี `.env` เพราะ backend มีค่า default แต่ก่อนเปิดให้เครื่องอื่นเข้าใช้ต้องสร้าง `.env` และตั้ง `AUTH_JWT_SECRET` เอง:
 
 ```bash
 cp .env.example .env
@@ -75,11 +75,11 @@ python -c 'import secrets; print(secrets.token_urlsafe(48))'
 
 ### 4. ดาวน์โหลด pretrained weights
 
-สำหรับโปรเจกต์ Pose Estimation ให้ดาวน์โหลด `yolo26n-pose.pt` **ที่ root ของโปรเจกต์** ก่อนใช้ `Generate pose suggestions` หรือทดสอบด้วย pretrained pose:
+สำหรับโปรเจกต์ Pose Estimation ให้ดาวน์โหลด `yolo26x-pose.pt` **ที่ root ของโปรเจกต์** เพื่อใช้ `Generate pose suggestions` ด้วย pretrained รุ่น Extra Large ส่วนหน้า Test pretrained และค่าเริ่มต้นในการเทรนยังใช้ `yolo26n-pose.pt` (Nano):
 
 ```bash
-python -c 'from ultralytics import YOLO; YOLO("yolo26n-pose.pt")'
-ls -lh yolo26n-pose.pt
+python -c 'from ultralytics import YOLO; YOLO("yolo26x-pose.pt"); YOLO("yolo26n-pose.pt")'
+ls -lh yolo26x-pose.pt yolo26n-pose.pt
 ```
 
 Backend อ่าน pretrained pose จากไฟล์ root นี้โดยตรง ไม่ต้องนำเข้า database หรืออัปโหลดผ่านเว็บ
@@ -176,14 +176,14 @@ Browser -> https://example.ngrok-free.app/api/... -> ngrok -> Vite 127.0.0.1:517
                                                                -> Backend 127.0.0.1:8000
 ```
 
-สร้าง root `.env` จากตัวอย่างและสร้าง secret แบบสุ่มก่อนเปิดให้เครื่องอื่นเข้าใช้:
+ถ้าใช้ setup script ไฟล์ root `.env` และ secret จะถูกสร้างให้แล้ว; ถ้าติดตั้งด้วยมือและยังไม่มี `.env` ให้สร้างจากตัวอย่างพร้อม secret แบบสุ่มก่อนเปิดให้เครื่องอื่นเข้าใช้:
 
 ```bash
 cp .env.example .env
 python -c 'import secrets; print(secrets.token_urlsafe(48))'
 ```
 
-นำค่าที่สุ่มได้ไปใส่ `AUTH_JWT_SECRET` หากยังไม่รู้ hostname ให้รัน `ngrok http 5173` เพื่อดู Forwarding URL ก่อน แล้วตั้งค่า hostname จริงโดยใส่เฉพาะ hostname ไม่ใส่ `https://` หรือ path:
+นำค่าที่สุ่มได้ไปใส่ `AUTH_JWT_SECRET` ในกรณีติดตั้งด้วยมือ หากยังไม่รู้ hostname ให้รัน `ngrok http 5173` เพื่อดู Forwarding URL ก่อน แล้วตั้งค่า hostname จริงโดยใส่เฉพาะ hostname ไม่ใส่ `https://` หรือ path:
 
 ```dotenv
 AUTH_JWT_SECRET=<GENERATED_SECRET>
@@ -202,7 +202,7 @@ ngrok http 5173
 
 โหมดนี้ไม่ต้องเพิ่ม public ngrok origin ใน `CORS_ORIGINS` เพราะ Browser เรียกหน้าเว็บและ `/api` จาก origin เดียวกัน ไม่ต้องเปลี่ยน Uvicorn เป็น `0.0.0.0` และไม่ควรตั้ง `VITE_ALLOWED_HOSTS=true`
 
-ถ้าติดตั้ง `screen` และ `ngrok` พร้อมตั้ง `AUTH_JWT_SECRET` ใน root `.env` แล้ว สามารถเปิด Backend, Frontend และ ngrok ใน screen สาม session ด้วยคำสั่งเดียวจาก root โปรเจกต์:
+ถ้าติดตั้ง `screen` และ `ngrok` (และ authenticate ngrok) พร้อมตั้ง `AUTH_JWT_SECRET` ใน root `.env` แล้ว สามารถเปิด Backend, Frontend และ ngrok ใน screen สาม session ด้วยคำสั่งเดียวจาก root โปรเจกต์:
 
 ```bash
 bash start-scripts.sh
@@ -314,7 +314,7 @@ tar -czf "backups/detect-anything-data-$(date +%Y%m%d-%H%M%S).tar.gz" \
 - `storage/projects/`: รูปต้นฉบับของแต่ละโปรเจกต์
 - `storage/models/`: weights ของโมเดลที่เทรนสำเร็จหรืออัปโหลดเข้าโปรเจกต์
 
-ไม่ต้องใส่ pretrained weights เช่น `yolo26n-pose.pt` เพราะดาวน์โหลดใหม่ตามขั้นตอนด้านบนได้ และไม่ต้องใส่ `temp/` สำหรับงานที่เทรนเสร็จแล้ว
+ไม่ต้องใส่ pretrained weights เช่น `yolo26n-pose.pt` และ `yolo26x-pose.pt` เพราะดาวน์โหลดใหม่ตามขั้นตอนด้านบนได้ และไม่ต้องใส่ `temp/` สำหรับงานที่เทรนเสร็จแล้ว
 
 หากมีงานสถานะ `INTERRUPTED` ที่ต้องการ Resume บนเครื่องใหม่ ให้เพิ่ม `temp/training` เข้า archive:
 
