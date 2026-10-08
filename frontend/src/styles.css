@@ -1070,6 +1070,21 @@ label {
 
 .annotation-image-navigation .annotation-image-position { flex: 1 1 auto; }
 
+.annotation-queue-indicator {
+  color: #526078;
+  font-size: 12px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.annotation-queue-error {
+  background: #fff7f7;
+  border-color: #fca5a5;
+  color: #b91c1c;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
 .annotation-edit-action {
   background: #e8f0ff;
   border-color: #9bbaff;
@@ -1114,6 +1129,8 @@ label {
   .annotation-image-navigation .icon-button:last-child { grid-column: 3; grid-row: 1; }
   .annotation-copy-previous,
   .annotation-edit-action { grid-column: 1 / -1; justify-content: center; }
+  .annotation-queue-indicator,
+  .annotation-queue-error { grid-column: 1 / -1; justify-content: center; }
 }
 
 h2 {

@@ -320,7 +320,7 @@ export function App() {
   const [modelDownloadFormats, setModelDownloadFormats] = useState<Record<number, ModelDownloadFormat>>({});
   const [modelActionsOpenId, setModelActionsOpenId] = useState<number | null>(null);
   const [draftBoxes, setDraftBoxes] = useState<DraftBox[]>([]);
-  const [savingBoxes, setSavingBoxes] = useState<DraftBox[]>([]);
+  const [saveQueueRevision, setSaveQueueRevision] = useState(0);
   const [poseCollecting, setPoseCollecting] = useState(false);
   const [posePoints, setPosePoints] = useState<PosePoint[]>([]);
   const [poseVisibilityMode, setPoseVisibilityMode] = useState<PoseVisibilityMode>("visible");
@@ -358,7 +358,12 @@ export function App() {
   const [annotationSaveState, setAnnotationSaveState] = useState<"idle" | "pending" | "saving" | "saved" | "error">("idle");
   const [drawingBox, setDrawingBox] = useState(false);
   const [imageSwitching, setImageSwitching] = useState(false);
-  const annotationSavePromise = useRef<Promise<boolean> | null>(null);
+  const annotationSaveTail = useRef<Promise<void>>(Promise.resolve());
+  const queuedBoxesByImage = useRef(new Map<number, DraftBox[]>());
+  const failedBoxesByImage = useRef(new Map<number, DraftBox[]>());
+  const lastQueuedDraft = useRef<{ imageId: number; boxes: DraftBox[] } | null>(null);
+  const selectedImageIdRef = useRef<number | null>(null);
+  const selectedProjectIdRef = useRef<number | null>(null);
   const reviewShortcutInFlight = useRef(false);
   const projectRequestId = useRef(0);
   const projectActionsRef = useRef<HTMLDivElement | null>(null);
@@ -372,6 +377,13 @@ export function App() {
 
   const selectedImage = images.find((image) => image.image_id === selectedImageId) ?? null;
   const selectedProject = projects.find((project) => project.project_id === selectedProjectId) ?? null;
+  selectedImageIdRef.current = selectedImageId;
+  selectedProjectIdRef.current = selectedProjectId;
+  const queuedImageBoxes = selectedImageId == null ? [] : queuedBoxesByImage.current.get(selectedImageId) ?? [];
+  const failedImageBoxes = selectedImageId == null ? [] : failedBoxesByImage.current.get(selectedImageId) ?? [];
+  const queuedImageCount = queuedBoxesByImage.current.size;
+  const failedImageCount = failedBoxesByImage.current.size;
+  void saveQueueRevision;
   const selectedProjectTask = selectedProject?.task_type === "POSE_ESTIMATION" ? "POSE_ESTIMATION" : "OBJECT_DETECTION";
   const poseProject = selectedProjectTask === "POSE_ESTIMATION";
   const visibleAnnotations = annotationImageId === selectedImageId ? annotations : [];
@@ -448,21 +460,22 @@ export function App() {
 
   const selectAnnotationImage = async (imageId: number) => {
     if (imageId === selectedImageId) return true;
-    if (annotationSavePromise.current) {
-      setStatus("Saving labels for this image. You can keep drawing; change images when the save finishes.");
-      return false;
-    }
     if (poseCollecting && posePoints.length > 0) {
       setStatus("Finish or cancel the current pose before changing images");
       return false;
     }
+    if (draftBoxes.length > 0 && annotationImageId !== selectedImageId) {
+      setStatus("Wait for this image's labels to load before changing images");
+      return false;
+    }
     setImageSwitching(true);
     try {
-      if (!(await saveManualAnnotation())) return false;
+      if (draftBoxes.length > 0) void saveManualAnnotation();
       if (poseCollecting) {
         setPoseCollecting(false);
         setPosePoints([]);
       }
+      selectedImageIdRef.current = imageId;
       setSelectedImageId(imageId);
       return true;
     } finally {
@@ -556,7 +569,10 @@ export function App() {
     setModelImportError(null);
     setAutoJobs([]);
     setDraftBoxes([]);
-    setSavingBoxes([]);
+    queuedBoxesByImage.current.clear();
+    failedBoxesByImage.current.clear();
+    lastQueuedDraft.current = null;
+    setSaveQueueRevision((current) => current + 1);
     setImageSwitching(false);
     setPoseCollecting(false);
     setPosePoints([]);
@@ -638,7 +654,9 @@ export function App() {
 
   const refreshAnnotations = useCallback(async (imageId: number) => {
     try {
-      setAnnotations(await api.listAnnotations(imageId));
+      const nextAnnotations = await api.listAnnotations(imageId);
+      if (selectedImageIdRef.current !== imageId) return;
+      setAnnotations(nextAnnotations);
       setAnnotationImageId(imageId);
     } catch (error) {
       setStatus(errorMessage(error));
@@ -666,8 +684,9 @@ export function App() {
 
   useEffect(() => {
     setDraftBoxes([]);
-    setSavingBoxes([]);
-    setAnnotationSaveState("idle");
+    setAnnotationSaveState(selectedImageId != null && failedBoxesByImage.current.has(selectedImageId)
+      ? "error"
+      : selectedImageId != null && queuedBoxesByImage.current.has(selectedImageId) ? "saving" : "idle");
     setDrawingBox(false);
     setReviewSetId(null);
     setManualEditSetId(null);
@@ -853,7 +872,12 @@ export function App() {
   };
 
   const activateProject = async (projectId: number) => {
-    if (!(await saveManualAnnotation())) return;
+    if ((draftBoxes.length > 0 || failedImageBoxes.length > 0) && !(await saveManualAnnotation())) return;
+    await annotationSaveTail.current;
+    if (failedBoxesByImage.current.size > 0) {
+      setStatus("Some labels could not be saved. Return to those images and retry before switching projects.");
+      return;
+    }
     clearProjectState();
     setProjectActionsOpen(false);
     setSelectedProjectId(projectId);
@@ -1085,6 +1109,10 @@ export function App() {
 
   const deleteSelectedProject = () => {
     if (!selectedProjectId) return;
+    if (draftBoxes.length > 0 || queuedImageCount > 0 || failedImageCount > 0) {
+      setStatus("Save or retry all labels before deleting this project");
+      return;
+    }
     const project = projects.find((item) => item.project_id === selectedProjectId);
     if (!window.confirm(`Delete project "${project?.name ?? selectedProjectId}" and all data inside it?`)) return;
     void runAction("Delete project", async () => {
@@ -1098,27 +1126,36 @@ export function App() {
   };
 
   const saveManualAnnotation = async (): Promise<boolean> => {
-    if (annotationSavePromise.current) return false;
-    if (draftBoxes.length === 0) return true;
+    if (draftBoxes.length === 0 && failedImageBoxes.length === 0) return true;
     if (!selectedImageId || annotationImageId !== selectedImageId) {
       setAnnotationSaveState("error");
       setStatus("Cannot save labels until this image's annotations load");
       return false;
     }
     const imageId = selectedImageId;
+    if (draftBoxes.length === 0 && queuedBoxesByImage.current.has(imageId)) return true;
+    if (draftBoxes.length > 0 && lastQueuedDraft.current?.imageId === imageId && lastQueuedDraft.current.boxes === draftBoxes) return true;
+    const projectId = selectedProjectId;
     const boxesToSave = draftBoxes;
-    const pendingIds = pendingSuggestions.map((set) => set.annotation_set_id);
-    const operation = (async () => {
-      setAnnotationSaveState("saving");
-      setSavingBoxes(boxesToSave);
-      setDraftBoxes((current) => current.slice(boxesToSave.length));
+    if (boxesToSave.length > 0) lastQueuedDraft.current = { imageId, boxes: boxesToSave };
+    queuedBoxesByImage.current.set(imageId, [...(queuedBoxesByImage.current.get(imageId) ?? []), ...boxesToSave]);
+    setSaveQueueRevision((current) => current + 1);
+    setAnnotationSaveState("saving");
+    setDraftBoxes((current) => current.slice(boxesToSave.length));
+    const operation = annotationSaveTail.current.then(async () => {
       try {
-        const newBoxes = boxesToSave.map((box) => ({ ...box, confidence: null }));
+        // Fetch at execution time: an earlier queued revision may have changed the approved set.
+        const currentSets = await api.listAnnotations(imageId);
+        const approved = [...currentSets].reverse().find((set) => set.status === "APPROVED") ?? null;
+        const pendingIds = currentSets.filter((set) => set.source_type === "MODEL" && set.status === "PENDING")
+          .map((set) => set.annotation_set_id);
+        const retriedBoxes = failedBoxesByImage.current.get(imageId) ?? [];
+        const newBoxes = [...retriedBoxes, ...boxesToSave].map((box) => ({ ...box, confidence: null }));
         // Each revision is a complete snapshot, not a patch to the previous labels.
-        const saved = latestApproved
-          ? await api.editAnnotation(latestApproved.annotation_set_id, {
+        const saved = approved
+          ? await api.editAnnotation(approved.annotation_set_id, {
             annotations: [
-              ...latestApproved.annotations.map((box) => ({ ...toReviewBox(box), confidence: null })),
+              ...approved.annotations.map((box) => ({ ...toReviewBox(box), confidence: null })),
               ...newBoxes,
             ],
           })
@@ -1132,37 +1169,40 @@ export function App() {
             saveMessage = `Labels saved, but pending suggestions remain: ${errorMessage(error)}`;
           }
         }
-        setAnnotations((current) => [...current.map((set) =>
-          pendingIds.includes(set.annotation_set_id) && saveMessage === "Labels saved"
-            ? { ...set, status: "REJECTED" }
-            : set,
-        ), saved]);
-        setSavingBoxes([]);
-        setAnnotationSaveState("saved");
-        setStatus(saveMessage);
-        setImageAnnotationStatuses((current) => [
-          ...current.filter((item) => item.image_id !== imageId),
-          {
-            image_id: imageId,
-            annotation_set_id: saved.annotation_set_id,
-            source_type: latestApproved ? "HUMAN_CORRECTED" : "HUMAN",
-            status: "APPROVED",
-            box_count: saved.annotations.length,
-            is_negative: false,
-          },
-        ]);
+        failedBoxesByImage.current.delete(imageId);
+        if (selectedProjectIdRef.current === projectId) {
+          setImageAnnotationStatuses((current) => [
+            ...current.filter((item) => item.image_id !== imageId),
+            {
+              image_id: imageId,
+              annotation_set_id: saved.annotation_set_id,
+              source_type: approved ? "HUMAN_CORRECTED" : "HUMAN",
+              status: "APPROVED",
+              box_count: saved.annotations.length,
+              is_negative: false,
+            },
+          ]);
+          if (selectedImageIdRef.current === imageId) {
+            void refreshAnnotations(imageId);
+            setAnnotationSaveState((current) => current === "pending" ? current :
+              (queuedBoxesByImage.current.get(imageId) ?? []).length > boxesToSave.length ? "saving" : "saved");
+            setStatus(saveMessage);
+          }
+        }
         return true;
       } catch (error) {
-        setDraftBoxes((current) => [...boxesToSave, ...current]);
-        setSavingBoxes([]);
-        setAnnotationSaveState("error");
-        setStatus(`Labels not saved: ${errorMessage(error)}`);
+        failedBoxesByImage.current.set(imageId, [...(failedBoxesByImage.current.get(imageId) ?? []), ...boxesToSave]);
+        if (selectedImageIdRef.current === imageId) setAnnotationSaveState("error");
+        setStatus(`Labels for image ${imageId} not saved: ${errorMessage(error)}`);
         return false;
       } finally {
-        annotationSavePromise.current = null;
+        const remaining = (queuedBoxesByImage.current.get(imageId) ?? []).slice(boxesToSave.length);
+        if (remaining.length > 0) queuedBoxesByImage.current.set(imageId, remaining);
+        else queuedBoxesByImage.current.delete(imageId);
+        setSaveQueueRevision((current) => current + 1);
       }
-    })();
-    annotationSavePromise.current = operation;
+    });
+    annotationSaveTail.current = operation.then(() => undefined, () => undefined);
     return operation;
   };
 
@@ -1177,14 +1217,14 @@ export function App() {
   }, [annotationSaveState, draftBoxes.length, poseProject]);
 
   useEffect(() => {
-    if (draftBoxes.length === 0 && annotationSaveState !== "saving") return;
+    if (draftBoxes.length === 0 && queuedImageCount === 0 && failedImageCount === 0) return;
     const warnBeforeLeaving = (event: BeforeUnloadEvent) => {
       event.preventDefault();
       event.returnValue = "";
     };
     window.addEventListener("beforeunload", warnBeforeLeaving);
     return () => window.removeEventListener("beforeunload", warnBeforeLeaving);
-  }, [annotationSaveState, draftBoxes.length]);
+  }, [draftBoxes.length, queuedImageCount, failedImageCount]);
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -1246,7 +1286,7 @@ export function App() {
       if (matchesShortcut(event, shortcuts, "editSavedLabels")) {
         event.preventDefault();
         if (event.repeat || !selectedImageId || annotationImageId !== selectedImageId || !latestApproved) return;
-        if (poseCollecting || drawingBox || draftBoxes.length > 0 || annotationSaveState === "saving") {
+        if (poseCollecting || drawingBox || draftBoxes.length > 0 || failedImageBoxes.length > 0 || annotationSaveState === "saving") {
           setStatus("Finish or cancel the current label before editing saved labels");
         } else {
           startManualEditor();
@@ -1256,7 +1296,7 @@ export function App() {
       if (matchesShortcut(event, shortcuts, "verifyCurrentNegative")) {
         event.preventDefault();
         if (event.repeat || !selectedImageId || annotationImageId !== selectedImageId) return;
-        if (poseCollecting || drawingBox || draftBoxes.length > 0 || annotationSaveState === "saving") {
+        if (poseCollecting || drawingBox || draftBoxes.length > 0 || failedImageBoxes.length > 0 || annotationSaveState === "saving") {
           setStatus("Finish or cancel the current label before verifying this image as negative");
         } else if (latestImageAnnotationSet?.is_negative) {
           setStatus("This image is already a verified negative");
@@ -1276,7 +1316,7 @@ export function App() {
           setStatus("Multiple pending sets on this image; choose one in Review Queue");
           return;
         }
-        if (draftBoxes.length > 0 || poseCollecting || annotationSaveState === "saving") {
+        if (draftBoxes.length > 0 || failedImageBoxes.length > 0 || poseCollecting || annotationSaveState === "saving") {
           setStatus("Save or cancel the current draft before reviewing this suggestion");
           return;
         }
@@ -1323,7 +1363,7 @@ export function App() {
   }, [activeView, autoLabelResults, busy, classes, editableSet, imageSelectorOpen, poseProject, shortcuts, workspaceSection,
     selectedImageId, images, draftBoxes, annotationImageId, latestApproved, latestImageAnnotationSet, pendingSuggestions,
     poseCollecting, posePoints.length, drawingBox, selectedClassId, poseVisibilityMode, selectedReviewBoxIndex, selectedPoseKeypointIndex,
-    annotationSaveState, reviewSetId, selectedProjectId, reviewBoxes, editingManualLabels, reviewHistory.length]);
+    annotationSaveState, failedImageBoxes.length, reviewSetId, selectedProjectId, reviewBoxes, editingManualLabels, reviewHistory.length]);
 
   const createAndBuildDataset = (imageIds: number[]) => {
     if (!selectedProjectId) return;
@@ -1933,7 +1973,12 @@ export function App() {
   };
 
   const logout = async () => {
-    if (!(await saveManualAnnotation())) return;
+    if ((draftBoxes.length > 0 || failedImageBoxes.length > 0) && !(await saveManualAnnotation())) return;
+    await annotationSaveTail.current;
+    if (failedBoxesByImage.current.size > 0) {
+      setStatus("Some labels could not be saved. Retry them before logging out.");
+      return;
+    }
     const refreshToken = session?.refresh_token;
     clearAuthSession();
     setSession(null);
@@ -2150,28 +2195,28 @@ export function App() {
             )}
             {selectedImage && annotationImageId === selectedImageId && !latestImageAnnotationSet?.is_negative && (
                 <button type="button" onClick={() => confirmNegative(selectedImage.image_id)}
-                  disabled={busy || !!editableSet || poseCollecting || drawingBox || draftBoxes.length > 0 || annotationSaveState === "saving"}
+                  disabled={busy || !!editableSet || poseCollecting || drawingBox || draftBoxes.length > 0 || failedImageBoxes.length > 0 || annotationSaveState === "saving"}
                   title={`Confirm this image has no target objects and clear its active labels (${shortcuts.verifyCurrentNegative || "unassigned"})`}>
                   <CircleDot size={16} /> Verify negative{shortcuts.verifyCurrentNegative ? ` · ${shortcuts.verifyCurrentNegative}` : ""}
                 </button>
               )}
             {!poseProject && selectedImage && (
               <div className={`annotation-save-state ${annotationSaveState}`} role="status" aria-live="polite">
-                <span>{annotationSaveState === "saving" ? `Saving labels…${draftBoxes.length > 0 ? ` ${draftBoxes.length} more queued` : " keep drawing"}` : annotationSaveState === "error" ? "Save failed · labels kept here" :
+                <span>{annotationSaveState === "saving" ? `Saving labels in background…${queuedImageCount > 1 ? ` ${queuedImageCount} images queued` : " keep drawing"}` : annotationSaveState === "error" ? "Save failed · labels kept on this image" :
                   draftBoxes.length > 0 ? "Unsaved labels" : annotationSaveState === "saved" ? "Saved" : "Draw a box to label"}</span>
-                {draftBoxes.length > 0 && annotationSaveState !== "saving" && (
+                {(draftBoxes.length > 0 || failedImageBoxes.length > 0) && (
                   <div className="annotation-save-actions">
-                    <button type="button" onClick={undoDraftBox} disabled={busy} title={`Undo last box (${shortcuts.undoDraft || "unassigned"})`}>Undo</button>
+                    {draftBoxes.length > 0 && <button type="button" onClick={undoDraftBox} disabled={busy} title={`Undo last box (${shortcuts.undoDraft || "unassigned"})`}>Undo</button>}
                     <button type="button" onClick={() => { void saveManualAnnotation(); }} disabled={busy}>
-                      {annotationSaveState === "error" ? "Retry" : "Save now"}
+                      {failedImageBoxes.length > 0 ? "Retry" : "Save now"}
                     </button>
                   </div>
                 )}
               </div>
             )}
-            {poseProject && (poseCollecting || draftBoxes.length > 0) && <div className="annotation-action-grid">
-              <button className="primary" onClick={saveManualAnnotation} disabled={draftBoxes.length === 0 || (poseCollecting && posePoints.length > 0) || busy || !!editableSet} title={`Save completed poses (${shortcuts.save || "unassigned"})`}>
-                <Save size={16} /> Save <kbd>{shortcuts.save || "—"}</kbd>
+            {poseProject && (poseCollecting || draftBoxes.length > 0 || failedImageBoxes.length > 0) && <div className="annotation-action-grid">
+              <button className="primary" onClick={saveManualAnnotation} disabled={(draftBoxes.length === 0 && failedImageBoxes.length === 0) || (poseCollecting && posePoints.length > 0) || busy || !!editableSet} title={`Save completed poses (${shortcuts.save || "unassigned"})`}>
+                <Save size={16} /> {failedImageBoxes.length > 0 ? "Retry save" : "Save"} <kbd>{shortcuts.save || "—"}</kbd>
               </button>
               <button onClick={undoDraftBox} disabled={(poseCollecting ? posePoints.length === 0 : draftBoxes.length === 0) || busy || !!editableSet} title={`${poseCollecting ? "Undo last point" : "Undo last unsaved pose"} (${shortcuts.undoAction || shortcuts.undoDraft || "unassigned"})`}>
                 <Undo2 size={16} /> Undo <kbd>{shortcuts.undoAction || shortcuts.undoDraft || "—"}</kbd>
@@ -2196,15 +2241,20 @@ export function App() {
             <nav className="annotation-image-navigation" aria-label="Navigate annotation images">
               <button className="icon-button" onClick={() => navigateSelectedImage(-1)} disabled={busy || selectedImageIndex <= 1} title={`Previous image (${shortcuts.previousImage || "unassigned"})`} aria-label="Previous image" type="button"><ChevronLeft size={20} /></button>
               <button className="annotation-image-position" onClick={() => setImageSelectorOpen(true)} disabled={busy} title="Open image selector" type="button">Image {selectedImageIndex} of {images.length}</button>
+              {queuedImageCount > 0 && <span className="annotation-queue-indicator" role="status">Saving {queuedImageCount} image{queuedImageCount === 1 ? "" : "s"}…</span>}
+              {failedImageCount > 0 && <button className="annotation-queue-error" type="button" onClick={() => {
+                const failedImageId = failedBoxesByImage.current.keys().next().value;
+                if (failedImageId != null) void selectAnnotationImage(failedImageId);
+              }}>Save failed on {failedImageCount} image{failedImageCount === 1 ? "" : "s"} · Open</button>}
               <button className="annotation-copy-previous" onClick={() => void copyPreviousLabels()} disabled={busy || selectedImageIndex <= 1 || !!editableSet || poseCollecting || draftBoxes.length > 0 || visibleAnnotations.some((annotationSet) => annotationSet.status !== "REJECTED" && annotationSet.annotations.length > 0)} title={selectedImageIndex <= 1 ? "No previous image" : "Copy labels from the previous image as an editable draft"} type="button"><Copy size={17} /> Copy previous labels</button>
-              {latestApproved && <button className="annotation-edit-action" onClick={startManualEditor} disabled={busy || !!editableSet || poseCollecting || drawingBox || draftBoxes.length > 0 || annotationSaveState === "saving"} title={`Edit saved labels (${shortcuts.editSavedLabels || "unassigned"})`} type="button"><Settings2 size={16} /> Edit labels <kbd>{shortcuts.editSavedLabels || "—"}</kbd></button>}
+              {latestApproved && <button className="annotation-edit-action" onClick={startManualEditor} disabled={busy || !!editableSet || poseCollecting || drawingBox || draftBoxes.length > 0 || failedImageBoxes.length > 0 || annotationSaveState === "saving"} title={`Edit saved labels (${shortcuts.editSavedLabels || "unassigned"})`} type="button"><Settings2 size={16} /> Edit labels <kbd>{shortcuts.editSavedLabels || "—"}</kbd></button>}
               <button className="icon-button" onClick={() => navigateSelectedImage(1)} disabled={busy || selectedImageIndex >= images.length} title={`Next image (${shortcuts.nextImage || "unassigned"})`} aria-label="Next image" type="button"><ChevronRight size={20} /></button>
             </nav>
           )}
           <AnnotationCanvas
             image={selectedImage}
             boxes={editableSet ? [] : latestApproved?.annotations ?? []}
-            draftBoxes={[...savingBoxes, ...draftBoxes]}
+            draftBoxes={[...failedImageBoxes, ...queuedImageBoxes, ...draftBoxes]}
             suggestions={editableSet ? [] : pendingSuggestions.flatMap((set) => set.annotations)}
             editableBoxes={editableSet ? reviewBoxes : []}
             selectedEditableIndex={selectedReviewBoxIndex}
@@ -2215,7 +2265,7 @@ export function App() {
               if (editableSet) addReviewBox(box);
               else {
                 setDraftBoxes((current) => [...current, box]);
-                if (!poseProject && !annotationSavePromise.current) setAnnotationSaveState("pending");
+                if (!poseProject) setAnnotationSaveState("pending");
               }
             }}
             onDrawingChange={setDrawingBox}
@@ -2229,16 +2279,16 @@ export function App() {
             poseEditing={poseProject && !!editableSet && selectedReviewBoxIndex != null}
             poseEditingKeypointIndex={selectedPoseKeypointIndex}
             onPoseEditPoint={(point) => updateSelectedPoseKeypoint(point, poseEditVisibilityMode === "visible" ? 2 : 1)}
-            busy={busy || imageSwitching || (poseProject && annotationSaveState === "saving") || annotationImageId !== selectedImageId}
+            busy={busy || imageSwitching || annotationImageId !== selectedImageId}
           />
           {pendingSuggestions.length > 0 && <section className="review-band" aria-label="Review queue">
             <SectionTitle title="Review Queue" />
             {pendingSuggestions.map((set) => <div className="review-row" key={set.annotation_set_id}>
               <span>Set {set.annotation_set_id} · revision {set.revision} · {set.annotations.length} boxes</span>
               <div>
-                <button onClick={() => { void review(set, "accept"); }} disabled={busy || !!editableSet || draftBoxes.length > 0 || poseCollecting || annotationSaveState === "saving"}><Check size={16} /> Accept all{pendingSuggestions.length === 1 && shortcuts.acceptSuggestion ? ` · ${shortcuts.acceptSuggestion}` : ""}</button>
-                <button onClick={() => startReviewEditor(set)} disabled={busy || !!editableSet || draftBoxes.length > 0 || poseCollecting || annotationSaveState === "saving"}><Save size={16} /> Edit{pendingSuggestions.length === 1 && shortcuts.editSuggestion ? ` · ${shortcuts.editSuggestion}` : ""}</button>
-                <button onClick={() => { void review(set, "reject"); }} disabled={busy || !!editableSet || draftBoxes.length > 0 || poseCollecting || annotationSaveState === "saving"}><X size={16} /> Reject all{pendingSuggestions.length === 1 && shortcuts.rejectSuggestion ? ` · ${shortcuts.rejectSuggestion}` : ""}</button>
+                <button onClick={() => { void review(set, "accept"); }} disabled={busy || !!editableSet || draftBoxes.length > 0 || failedImageBoxes.length > 0 || poseCollecting || annotationSaveState === "saving"}><Check size={16} /> Accept all{pendingSuggestions.length === 1 && shortcuts.acceptSuggestion ? ` · ${shortcuts.acceptSuggestion}` : ""}</button>
+                <button onClick={() => startReviewEditor(set)} disabled={busy || !!editableSet || draftBoxes.length > 0 || failedImageBoxes.length > 0 || poseCollecting || annotationSaveState === "saving"}><Save size={16} /> Edit{pendingSuggestions.length === 1 && shortcuts.editSuggestion ? ` · ${shortcuts.editSuggestion}` : ""}</button>
+                <button onClick={() => { void review(set, "reject"); }} disabled={busy || !!editableSet || draftBoxes.length > 0 || failedImageBoxes.length > 0 || poseCollecting || annotationSaveState === "saving"}><X size={16} /> Reject all{pendingSuggestions.length === 1 && shortcuts.rejectSuggestion ? ` · ${shortcuts.rejectSuggestion}` : ""}</button>
               </div>
             </div>)}
           </section>}
