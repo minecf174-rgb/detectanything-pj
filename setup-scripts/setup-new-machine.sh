@@ -261,6 +261,10 @@ echo "Applying database migrations..."
 "$PYTHON" -c 'from app.main import app; print(f"Backend import OK: {app.title}")'
 
 echo
+echo "Preparing WebP previews for existing images (skips previews already present)..."
+"$PYTHON" -m app.modules.images.backfill_previews
+
+echo
 echo "========================================="
 echo " New machine setup completed"
 echo "========================================="

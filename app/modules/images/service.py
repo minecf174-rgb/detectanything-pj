@@ -1,14 +1,11 @@
 from hashlib import sha256
 from io import BytesIO
-from os import replace
 from pathlib import Path
-from tempfile import NamedTemporaryFile
 from uuid import uuid4
 from zipfile import BadZipFile, ZipFile
 
-from fastapi import HTTPException, UploadFile
+from fastapi import BackgroundTasks, HTTPException, UploadFile
 from PIL import Image as PILImage
-from PIL import ImageOps
 from sqlalchemy import delete, select, update
 from sqlalchemy.orm import Session
 
@@ -20,6 +17,7 @@ from app.modules.auto_label.models import AutoLabelJobItem
 from app.modules.classes.models import LabelClass
 from app.modules.datasets.models import DatasetVersionItem
 from app.modules.images.models import Image
+from app.modules.images.previews import generate_preview, prepare_previews, preview_path
 from app.modules.images.repository import ImageRepository
 from app.modules.images.schemas import ImageBulkDeleteRequest, ImageBulkStatusRequest
 from app.modules.projects.models import User
@@ -31,7 +29,10 @@ class ImageService:
         self.repository = ImageRepository(db)
         self.storage = LocalStorageService(get_settings().storage_root)
 
-    async def upload_image(self, project_id: int, file: UploadFile, current_user: User):
+    async def upload_image(
+        self, project_id: int, file: UploadFile, current_user: User,
+        background_tasks: BackgroundTasks | None = None,
+    ):
         require_project_owner(self.db, current_user, project_id)
 
         data = await file.read()
@@ -55,6 +56,8 @@ class ImageService:
         )
         self.db.commit()
         self.db.refresh(image)
+        if background_tasks is not None:
+            background_tasks.add_task(prepare_previews, [self._preview_paths(image)])
         return image
 
     def list_project_images(
@@ -147,6 +150,7 @@ class ImageService:
         max_labeled_images: int | None = None,
         class_indexes: str | None = None,
         import_remaining_images: bool = True,
+        background_tasks: BackgroundTasks | None = None,
     ):
         project = require_project_owner(self.db, current_user, project_id)
 
@@ -213,6 +217,7 @@ class ImageService:
                 imported_images = 0
                 imported_sets = 0
                 imported_boxes = 0
+                imported_preview_paths: list[tuple[Path, Path]] = []
                 for image_name, boxes in prepared_images:
                     image_data = archive.read(image_name)
                     width, height = self._read_image_size(image_data)
@@ -228,6 +233,7 @@ class ImageService:
                         height=height,
                         status="UPLOADED",
                     )
+                    imported_preview_paths.append(self._preview_paths(image))
                     imported_images += 1
 
                     if not boxes:
@@ -268,6 +274,8 @@ class ImageService:
                     imported_boxes += len(boxes)
 
                 self.db.commit()
+                if background_tasks is not None:
+                    background_tasks.add_task(prepare_previews, imported_preview_paths)
                 return {
                     "imported_images": imported_images,
                     "imported_annotation_sets": imported_sets,
@@ -321,12 +329,16 @@ class ImageService:
         except UnicodeDecodeError as exc:
             raise HTTPException(status_code=400, detail="YOLO metadata must be UTF-8 text") from exc
 
-    async def import_image_archive(self, project_id: int, current_user: User, file: UploadFile):
+    async def import_image_archive(
+        self, project_id: int, current_user: User, file: UploadFile,
+        background_tasks: BackgroundTasks | None = None,
+    ):
         require_project_owner(self.db, current_user, project_id)
         data = await file.read()
         if not data:
             raise HTTPException(status_code=400, detail="Empty zip file")
         saved_keys: list[str] = []
+        imported_preview_paths: list[tuple[Path, Path]] = []
         try:
             with ZipFile(BytesIO(data)) as archive:
                 names = [name for name in archive.namelist() if self._is_usable_zip_member(name)]
@@ -340,7 +352,7 @@ class ImageService:
                     object_key = f"projects/project_{project_id}/images/{uuid4().hex}{suffix}"
                     self.storage.save(object_key, image_data)
                     saved_keys.append(object_key)
-                    self.repository.create(
+                    image = self.repository.create(
                         project_id=project_id,
                         original_filename=Path(image_name).name,
                         object_key=object_key,
@@ -349,7 +361,10 @@ class ImageService:
                         height=height,
                         status="UPLOADED",
                     )
+                    imported_preview_paths.append(self._preview_paths(image))
                 self.db.commit()
+                if background_tasks is not None:
+                    background_tasks.add_task(prepare_previews, imported_preview_paths)
                 return {
                     "imported_images": len(image_names),
                     "imported_annotation_sets": 0,
@@ -371,29 +386,13 @@ class ImageService:
 
     def get_image_preview_file_path(self, image_id: int, current_user: User) -> Path:
         image, source_path = self._authorized_image_path(image_id, current_user)
-        preview_path = self._preview_path(image)
-        if preview_path.exists():
-            return preview_path
-        preview_path.parent.mkdir(parents=True, exist_ok=True)
-        temporary_path: Path | None = None
-        try:
-            with NamedTemporaryFile(dir=preview_path.parent, suffix=".webp", delete=False) as temporary:
-                temporary_path = Path(temporary.name)
-            with PILImage.open(source_path) as source:
-                preview = ImageOps.exif_transpose(source)
-                preview.thumbnail((768, 768), PILImage.Resampling.LANCZOS)
-                if preview.mode not in {"RGB", "RGBA"}:
-                    preview = preview.convert("RGBA" if "A" in preview.getbands() or "transparency" in preview.info else "RGB")
-                preview.save(temporary_path, format="WEBP", quality=78, method=4)
-            replace(temporary_path, preview_path)
-        finally:
-            if temporary_path is not None:
-                temporary_path.unlink(missing_ok=True)
-        return preview_path
+        return generate_preview(source_path, self._preview_path(image))
 
     def _preview_path(self, image: Image) -> Path:
-        version = sha256(f"{image.object_key}:{image.file_hash}:webp-768-v1".encode()).hexdigest()[:20]
-        return self.storage.root / "previews" / f"project_{image.project_id}" / f"image_{image.image_id}_{version}.webp"
+        return preview_path(self.storage.root, image.project_id, image.image_id, image.object_key, image.file_hash)
+
+    def _preview_paths(self, image: Image) -> tuple[Path, Path]:
+        return self.storage.root / image.object_key, self._preview_path(image)
 
     def _authorized_image_path(self, image_id: int, current_user: User) -> tuple[Image, Path]:
         image = self.repository.get(image_id)

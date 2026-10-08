@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, File, UploadFile
+from fastapi import APIRouter, BackgroundTasks, Depends, File, UploadFile
 from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
 
@@ -22,16 +22,18 @@ router = APIRouter()
 @router.post("/upload", response_model=ImageRead)
 async def upload_image(
     project_id: int,
+    background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    return await ImageService(db).upload_image(project_id, file, current_user)
+    return await ImageService(db).upload_image(project_id, file, current_user, background_tasks)
 
 
 @router.post("/import-yolo", response_model=YoloImportRead)
 async def import_yolo_dataset(
     project_id: int,
+    background_tasks: BackgroundTasks,
     class_names: str | None = None,
     class_indexes: str | None = None,
     max_labeled_images: int | None = None,
@@ -48,6 +50,7 @@ async def import_yolo_dataset(
         max_labeled_images,
         class_indexes,
         import_remaining_images,
+        background_tasks,
     )
 
 
@@ -63,11 +66,12 @@ async def inspect_archive(
 @router.post("/import-image-archive", response_model=YoloImportRead)
 async def import_image_archive(
     project_id: int,
+    background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    return await ImageService(db).import_image_archive(project_id, current_user, file)
+    return await ImageService(db).import_image_archive(project_id, current_user, file, background_tasks)
 
 
 @router.get("/project/{project_id}", response_model=list[ImageRead])
