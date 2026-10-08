@@ -34,4 +34,5 @@ class ProjectService:
         self.repository.delete_project_tree(project_id)
         self.db.commit()
         self.storage.delete_prefix(f"projects/project_{project_id}")
+        self.storage.delete_prefix(f"previews/project_{project_id}")
         self.storage.delete_prefix(f"models/project_{project_id}")

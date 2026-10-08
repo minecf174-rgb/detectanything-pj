@@ -50,6 +50,10 @@ class AnnotationBulkReviewRequest(BaseModel):
     annotation_set_ids: list[int] = Field(min_length=1, max_length=10000)
 
 
+class AnnotationPreviewBatchRequest(BaseModel):
+    annotation_set_ids: list[int] = Field(min_length=1, max_length=48)
+
+
 class AnnotationBulkReviewRead(BaseModel):
     rejected_count: int
     skipped_count: int

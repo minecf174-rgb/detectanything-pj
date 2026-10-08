@@ -1,11 +1,14 @@
 from hashlib import sha256
 from io import BytesIO
+from os import replace
 from pathlib import Path
+from tempfile import NamedTemporaryFile
 from uuid import uuid4
 from zipfile import BadZipFile, ZipFile
 
 from fastapi import HTTPException, UploadFile
 from PIL import Image as PILImage
+from PIL import ImageOps
 from sqlalchemy import delete, select, update
 from sqlalchemy.orm import Session
 
@@ -100,6 +103,7 @@ class ImageService:
                 detail=f"Archive images before permanent deletion: {active_ids}",
             )
         object_keys = [image.object_key for image in images]
+        preview_paths = [self._preview_path(image) for image in images]
 
         annotation_set_ids = list(
             self.db.scalars(
@@ -130,6 +134,8 @@ class ImageService:
 
         for object_key in object_keys:
             self.storage.delete(object_key)
+        for preview_path in preview_paths:
+            preview_path.unlink(missing_ok=True)
         return {"deleted_count": len(images)}
 
     async def import_yolo_zip(
@@ -360,6 +366,36 @@ class ImageService:
             raise
 
     def get_image_file_path(self, image_id: int, current_user: User) -> Path:
+        _, path = self._authorized_image_path(image_id, current_user)
+        return path
+
+    def get_image_preview_file_path(self, image_id: int, current_user: User) -> Path:
+        image, source_path = self._authorized_image_path(image_id, current_user)
+        preview_path = self._preview_path(image)
+        if preview_path.exists():
+            return preview_path
+        preview_path.parent.mkdir(parents=True, exist_ok=True)
+        temporary_path: Path | None = None
+        try:
+            with NamedTemporaryFile(dir=preview_path.parent, suffix=".webp", delete=False) as temporary:
+                temporary_path = Path(temporary.name)
+            with PILImage.open(source_path) as source:
+                preview = ImageOps.exif_transpose(source)
+                preview.thumbnail((768, 768), PILImage.Resampling.LANCZOS)
+                if preview.mode not in {"RGB", "RGBA"}:
+                    preview = preview.convert("RGBA" if "A" in preview.getbands() or "transparency" in preview.info else "RGB")
+                preview.save(temporary_path, format="WEBP", quality=78, method=4)
+            replace(temporary_path, preview_path)
+        finally:
+            if temporary_path is not None:
+                temporary_path.unlink(missing_ok=True)
+        return preview_path
+
+    def _preview_path(self, image: Image) -> Path:
+        version = sha256(f"{image.object_key}:{image.file_hash}:webp-768-v1".encode()).hexdigest()[:20]
+        return self.storage.root / "previews" / f"project_{image.project_id}" / f"image_{image.image_id}_{version}.webp"
+
+    def _authorized_image_path(self, image_id: int, current_user: User) -> tuple[Image, Path]:
         image = self.repository.get(image_id)
         if image is None:
             raise HTTPException(status_code=404, detail="Image not found")
@@ -367,7 +403,7 @@ class ImageService:
         path = self.storage.root / image.object_key
         if not path.exists():
             raise HTTPException(status_code=404, detail="Image file not found")
-        return path
+        return image, path
 
     def _read_image_size(self, data: bytes) -> tuple[int | None, int | None]:
         try:

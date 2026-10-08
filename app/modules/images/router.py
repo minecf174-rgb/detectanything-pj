@@ -112,3 +112,13 @@ def get_image_file(
             "Pragma": "no-cache",
         },
     )
+
+
+@router.get("/{image_id}/preview")
+def get_image_preview(
+    image_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    path = ImageService(db).get_image_preview_file_path(image_id, current_user)
+    return FileResponse(path, media_type="image/webp", headers={"Cache-Control": "private, no-store"})

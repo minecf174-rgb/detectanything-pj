@@ -2839,19 +2839,21 @@ function ImageSelectorModal({
   useEffect(() => {
     let active = true;
     const missing = visible.filter((image) => {
+      const status = statusByImage.get(image.image_id);
       if (!Object.prototype.hasOwnProperty.call(previews, image.image_id)) return true;
-      return previews[image.image_id]?.status !== statusByImage.get(image.image_id)?.status;
+      return previews[image.image_id]?.annotation_set_id !== status?.annotation_set_id;
     });
     if (missing.length === 0) return () => { active = false; };
-    void Promise.all(missing.map(async (image) => {
-      const sets = await api.listAnnotations(image.image_id);
-      const preview = [...sets].reverse()[0] ?? null;
-      return [image.image_id, preview] as const;
-    })).then((entries) => {
-      if (active) setPreviews((current) => ({ ...current, ...Object.fromEntries(entries) }));
+    const annotationSetIds = [...new Set(missing.map((image) => statusByImage.get(image.image_id)?.annotation_set_id).filter((id): id is number => id != null))];
+    const batches = Array.from({ length: Math.ceil(annotationSetIds.length / 48) }, (_, index) => annotationSetIds.slice(index * 48, (index + 1) * 48));
+    void Promise.all(batches.map((ids) => api.listAnnotationPreviews(ids))).then((groups) => {
+      if (!active) return;
+      const byImage = new Map(groups.flat().map((set) => [set.image_id, set]));
+      const entries = missing.map((image) => [image.image_id, byImage.get(image.image_id) ?? null] as const);
+      setPreviews((current) => ({ ...current, ...Object.fromEntries(entries) }));
     }).catch(() => undefined);
     return () => { active = false; };
-  }, [rangeStart, rangeEnd, search, annotationStatuses]);
+  }, [rangeStart, rangeEnd, filtered, statusByImage]);
 
   useEffect(() => {
     let secondFrame = 0;
@@ -3028,7 +3030,7 @@ function ImageSelectorModal({
             {!selectingMultiple && selected && <span className="image-card-selected"><Check size={14} /> Current image</span>}
             {selectingMultiple && bulkSelected && <span className="image-card-selected"><Check size={14} /> Selected</span>}
             <span className={`image-card-label-state ${hasLabels ? "labeled" : "drawing"}`}>{annotationStatus?.is_negative ? "Negative" : hasLabels ? "Labeled" : "Needs drawing"}</span>
-            <ImageSelectorPreview image={image} alt={image.original_filename ?? `Image ${globalIndex}`} preview={preview} frame={frame} classColors={classColors} classNames={classNames} showTags />
+            <ImageSelectorPreview image={image} alt={image.original_filename ?? `Image ${globalIndex}`} preview={preview} frame={frame} classColors={classColors} classNames={classNames} showTags thumbnail scrollRoot={gridRef} />
             <div><strong>#{globalIndex} {image.original_filename ?? `image-${globalIndex}`}</strong><span className={statusClass}>{pendingImageIds.has(image.image_id) && hasLabels ? `Pending · ${annotationStatus?.box_count ?? 0}` : statusText}</span>{tagNames.length > 0 && <small className="image-selector-card-tags" title={tagNames.join(", ")}>Tags: {tagNames.join(", ")}</small>}</div>
           </button>;
         })}
@@ -3637,7 +3639,7 @@ function ClassColorPicker({ value, onChange, compact = false }: {
   </div>;
 }
 
-function useProtectedImageUrl(image: ImageItem | null) {
+function useProtectedImageUrl(image: ImageItem | null, variant: "original" | "thumbnail" = "original") {
   const [url, setUrl] = useState<string | null>(null);
   const imageId = image?.image_id;
   const version = image?.file_hash ?? image?.updated_at ?? image?.created_at;
@@ -3649,7 +3651,7 @@ function useProtectedImageUrl(image: ImageItem | null) {
     }
     let active = true;
     let objectUrl: string | null = null;
-    void api.getImageBlob(image).then((blob) => {
+    void api.getImageBlob(image, variant).then((blob) => {
       objectUrl = URL.createObjectURL(blob);
       if (active) setUrl(objectUrl);
       else URL.revokeObjectURL(objectUrl);
@@ -3658,7 +3660,7 @@ function useProtectedImageUrl(image: ImageItem | null) {
       active = false;
       if (objectUrl) URL.revokeObjectURL(objectUrl);
     };
-  }, [imageId, version]);
+  }, [imageId, version, variant]);
 
   return url;
 }
@@ -3681,6 +3683,8 @@ function ImageSelectorPreview({
   classColors,
   classNames,
   showTags = false,
+  thumbnail = false,
+  scrollRoot,
 }: {
   image: ImageItem;
   alt: string;
@@ -3689,8 +3693,29 @@ function ImageSelectorPreview({
   classColors: Record<number, string>;
   classNames?: Record<number, string>;
   showTags?: boolean;
+  thumbnail?: boolean;
+  scrollRoot?: { current: HTMLDivElement | null };
 }) {
-  const imageUrl = useProtectedImageUrl(image);
+  const containerRef = useRef<HTMLDivElement | null>(null);
+  const [nearViewport, setNearViewport] = useState(!thumbnail);
+  useEffect(() => {
+    if (!thumbnail || nearViewport) return;
+    const target = containerRef.current;
+    if (!target) return;
+    if (!window.IntersectionObserver) {
+      setNearViewport(true);
+      return;
+    }
+    const observer = new IntersectionObserver((entries) => {
+      if (entries.some((entry) => entry.isIntersecting)) {
+        setNearViewport(true);
+        observer.disconnect();
+      }
+    }, { root: scrollRoot?.current ?? null, rootMargin: "300px" });
+    observer.observe(target);
+    return () => observer.disconnect();
+  }, [thumbnail, nearViewport, scrollRoot]);
+  const imageUrl = useProtectedImageUrl(thumbnail && !nearViewport ? null : image, thumbnail ? "thumbnail" : "original");
   const [imageReady, setImageReady] = useState(false);
 
   useEffect(() => setImageReady(false), [imageUrl, image.image_id]);
@@ -3701,7 +3726,7 @@ function ImageSelectorPreview({
       ? "rejected"
       : "approved";
 
-  return <div className={showTags ? "image-selector-preview show-tags" : "image-selector-preview"}>
+  return <div ref={containerRef} className={showTags ? "image-selector-preview show-tags" : "image-selector-preview"}>
     {imageUrl
       ? <img className={imageReady ? undefined : "image-hidden"} src={imageUrl} alt={alt} loading="lazy" onLoad={() => setImageReady(true)} />
       : <span className="protected-image-placeholder">Loading image...</span>}
@@ -4619,7 +4644,7 @@ function AutoLabelResultsModal({
                     onClick={() => onOpen(result)}
                     title={canReview ? "Open this image for review" : "View this image"}
                   >
-                    <AutoLabelResultPreview result={result} classColors={classColors} />
+                    <AutoLabelResultPreview result={result} classColors={classColors} scrollRoot={resultsGridRef} />
                     <span className={boxCount > 0 ? "result-badge detected" : "result-badge"}>
                       {boxCount} {boxCount === 1 ? "box" : "boxes"}
                     </span>
@@ -4660,9 +4685,11 @@ function AutoLabelResultsModal({
 function AutoLabelResultPreview({
   result,
   classColors,
+  scrollRoot,
 }: {
   result: AutoLabelResult;
   classColors: Record<number, string>;
+  scrollRoot: { current: HTMLDivElement | null };
 }) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const [aspectRatio, setAspectRatio] = useState(4 / 3);
@@ -4685,6 +4712,8 @@ function AutoLabelResultPreview({
       preview={result.annotationSet}
       frame={frame}
       classColors={classColors}
+      thumbnail
+      scrollRoot={scrollRoot}
     />
   </div>;
 }

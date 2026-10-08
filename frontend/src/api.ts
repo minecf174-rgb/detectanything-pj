@@ -248,7 +248,46 @@ function loadSession(): AuthSession | null {
 let activeSession: AuthSession | null = loadSession();
 let refreshPromise: Promise<boolean> | null = null;
 let selectedApiBase: string | null = null;
-const imageBlobRequests = new Map<number, Promise<Blob>>();
+const imageBlobRequests = new Map<string, Promise<Blob>>();
+const thumbnailBlobCache = new Map<string, Blob>();
+const thumbnailLoadQueue: Array<() => void> = [];
+const thumbnailCacheLimit = 24 * 1024 * 1024;
+let thumbnailCacheBytes = 0;
+let activeThumbnailLoads = 0;
+
+function clearThumbnailCache() {
+  thumbnailBlobCache.clear();
+  thumbnailCacheBytes = 0;
+}
+
+function cacheThumbnail(key: string, blob: Blob) {
+  if (blob.size > thumbnailCacheLimit) return;
+  const previous = thumbnailBlobCache.get(key);
+  if (previous) thumbnailCacheBytes -= previous.size;
+  thumbnailBlobCache.delete(key);
+  thumbnailBlobCache.set(key, blob);
+  thumbnailCacheBytes += blob.size;
+  while (thumbnailCacheBytes > thumbnailCacheLimit) {
+    const oldestKey = thumbnailBlobCache.keys().next().value;
+    if (!oldestKey) break;
+    thumbnailCacheBytes -= thumbnailBlobCache.get(oldestKey)?.size ?? 0;
+    thumbnailBlobCache.delete(oldestKey);
+  }
+}
+
+function queueThumbnailLoad(load: () => Promise<Blob>): Promise<Blob> {
+  return new Promise((resolve, reject) => {
+    const start = () => {
+      activeThumbnailLoads += 1;
+      void load().then(resolve, reject).finally(() => {
+        activeThumbnailLoads -= 1;
+        thumbnailLoadQueue.shift()?.();
+      });
+    };
+    if (activeThumbnailLoads < 6) start();
+    else thumbnailLoadQueue.push(start);
+  });
+}
 
 export class ApiHttpError extends Error {
   constructor(message: string, readonly status: number) {
@@ -261,11 +300,13 @@ export function getAuthSession() {
 }
 
 export function saveAuthSession(session: AuthSession) {
+  if (activeSession?.user.user_id !== session.user.user_id) clearThumbnailCache();
   activeSession = session;
   window.localStorage.setItem(SESSION_STORAGE_KEY, JSON.stringify(session));
 }
 
 export function clearAuthSession() {
+  clearThumbnailCache();
   activeSession = null;
   window.localStorage.removeItem(SESSION_STORAGE_KEY);
 }
@@ -440,17 +481,33 @@ export const api = {
     body: JSON.stringify({ refresh_token: refreshToken }),
   }),
   me: () => request<User>("/auth/me"),
-  getImageBlob: (image: ImageItem) => {
-    const existing = imageBlobRequests.get(image.image_id);
+  getImageBlob: (image: ImageItem, variant: "original" | "thumbnail" = "original") => {
+    const userId = activeSession?.user.user_id;
+    const key = `${userId}:${image.project_id}:${image.image_id}:${image.file_hash ?? image.updated_at ?? image.created_at}:${variant}`;
+    if (variant === "thumbnail") {
+      const cached = thumbnailBlobCache.get(key);
+      if (cached) {
+        thumbnailBlobCache.delete(key);
+        thumbnailBlobCache.set(key, cached);
+        return Promise.resolve(cached);
+      }
+    }
+    const existing = imageBlobRequests.get(key);
     if (existing) return existing;
     const imageRequest = (async () => {
-      const response = await requestResponse(`/images/${image.image_id}/file?v=${encodeURIComponent(image.file_hash ?? image.updated_at ?? image.created_at)}`);
-      if (!response.ok) throw new Error(await response.text());
-      return response.blob();
+      const load = async () => {
+        const endpoint = variant === "thumbnail" ? "preview" : "file";
+        const response = await requestResponse(`/images/${image.image_id}/${endpoint}?v=${encodeURIComponent(image.file_hash ?? image.updated_at ?? image.created_at)}`);
+        if (!response.ok) throw new Error(await response.text());
+        return response.blob();
+      };
+      const blob = variant === "thumbnail" ? await queueThumbnailLoad(load) : await load();
+      if (variant === "thumbnail" && activeSession?.user.user_id === userId) cacheThumbnail(key, blob);
+      return blob;
     })();
-    imageBlobRequests.set(image.image_id, imageRequest);
+    imageBlobRequests.set(key, imageRequest);
     const clearRequest = () => {
-      if (imageBlobRequests.get(image.image_id) === imageRequest) imageBlobRequests.delete(image.image_id);
+      if (imageBlobRequests.get(key) === imageRequest) imageBlobRequests.delete(key);
     };
     void imageRequest.then(clearRequest, clearRequest);
     return imageRequest;
@@ -584,6 +641,10 @@ export const api = {
     });
   },
   listAnnotations: (imageId: number) => request<AnnotationSet[]>(`/annotations/images/${imageId}/annotation-sets`),
+  listAnnotationPreviews: (annotationSetIds: number[]) => request<AnnotationSet[]>("/annotations/sets/previews", {
+    method: "POST",
+    body: JSON.stringify({ annotation_set_ids: annotationSetIds }),
+  }),
   listImageAnnotationStatuses: (projectId: number) => request<ImageAnnotationStatus[]>(`/annotations/projects/${projectId}/image-statuses`),
   confirmNegative: (imageId: number) => request<AnnotationSet>(`/annotations/images/${imageId}/confirm-negative`, { method: "POST" }),
   createAnnotationSet: (imageId: number, payload: unknown) => request<AnnotationSet>(`/annotations/images/${imageId}/annotation-sets`, {

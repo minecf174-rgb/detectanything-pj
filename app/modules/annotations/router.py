@@ -8,6 +8,7 @@ from app.modules.annotations.schemas import (
     AnnotationBulkReviewRead,
     AnnotationBulkReviewRequest,
     AnnotationCorrectionRequest,
+    AnnotationPreviewBatchRequest,
     AnnotationReviewRequest,
     AnnotationSetCreate,
     AnnotationSetRead,
@@ -26,6 +27,15 @@ def list_project_image_annotation_statuses(
     db: Session = Depends(get_db),
 ):
     return AnnotationService(db).list_project_image_statuses(project_id, current_user)
+
+
+@router.post("/sets/previews", response_model=list[AnnotationSetRead])
+def list_annotation_previews(
+    payload: AnnotationPreviewBatchRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    return AnnotationService(db).list_annotation_previews(payload, current_user)
 
 
 @router.post("/images/{image_id}/annotation-sets", response_model=AnnotationSetRead)

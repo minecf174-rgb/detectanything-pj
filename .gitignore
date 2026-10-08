@@ -46,6 +46,7 @@ cloudflare/*.json
 # Uploaded data, trained models, and temporary work files
 storage/projects/**
 storage/models/**
+storage/previews/**
 temp/**
 !storage/projects/.gitkeep
 !storage/models/.gitkeep

@@ -1,6 +1,6 @@
 from fastapi import HTTPException
 from sqlalchemy import func, select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, selectinload
 
 from app.modules.annotations.models import Annotation, AnnotationSet
 from app.core.authz import require_project_owner
@@ -10,13 +10,14 @@ from datetime import datetime, timezone
 from app.modules.annotations.schemas import (
     AnnotationBulkReviewRequest,
     AnnotationCorrectionRequest,
+    AnnotationPreviewBatchRequest,
     AnnotationReviewRequest,
     AnnotationSetCreate,
 )
 from app.modules.auto_label.repository import AutoLabelRepository
 from app.modules.classes.models import LabelClass
 from app.modules.images.models import Image
-from app.modules.projects.models import User
+from app.modules.projects.models import Project, User
 
 
 class AnnotationService:
@@ -50,6 +51,23 @@ class AnnotationService:
             raise HTTPException(status_code=404, detail="Image not found")
         require_project_owner(self.db, current_user, image.project_id)
         return self.repository.list_by_image(image_id)
+
+    def list_annotation_previews(self, data: AnnotationPreviewBatchRequest, current_user: User):
+        annotation_set_ids = list(dict.fromkeys(data.annotation_set_ids))
+        previews = list(self.db.scalars(
+            select(AnnotationSet)
+            .join(Image, Image.image_id == AnnotationSet.image_id)
+            .join(Project, Project.project_id == Image.project_id)
+            .where(
+                AnnotationSet.annotation_set_id.in_(annotation_set_ids),
+                Project.owner_id == current_user.user_id,
+                Image.status != "ARCHIVED",
+            )
+            .options(selectinload(AnnotationSet.annotations).selectinload(Annotation.keypoints))
+        ))
+        if len(previews) != len(annotation_set_ids):
+            raise HTTPException(status_code=404, detail="Annotation preview not found")
+        return previews
 
     def list_project_image_statuses(self, project_id: int, current_user: User):
         require_project_owner(self.db, current_user, project_id)
