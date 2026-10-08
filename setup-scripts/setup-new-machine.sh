@@ -126,6 +126,7 @@ if [[ "${1:-}" == "--check" ]]; then
             echo "Optional public-start tool: $optional_tool missing (local development still works)."
         fi
     done
+    echo "Ultralytics: latest stable release will be installed and checked for MPS pose support."
     echo "Check complete; no packages installed and no database changes made."
     exit 0
 fi
@@ -138,6 +139,27 @@ fi
 
 PYTHON="$ROOT_DIR/venv/bin/python"
 [[ -x "$PYTHON" ]] || fail "Project virtual environment was not created at $ROOT_DIR/venv."
+
+echo
+echo "Upgrading Ultralytics to the latest stable release..."
+# The platform installer has already selected the appropriate PyTorch build.
+# Keep that build intact (particularly CUDA wheels) while updating Ultralytics.
+"$PYTHON" -m pip install --upgrade --no-deps "ultralytics>=8.4.155"
+"$PYTHON" -m pip check
+"$PYTHON" - <<'PY'
+import numpy as np
+import torch
+import ultralytics
+from ultralytics.utils.metrics import RLE_WEIGHT
+
+print(f"Ultralytics: {ultralytics.__version__}")
+print(f"Pose loss weights dtype: {RLE_WEIGHT.dtype}")
+if torch.backends.mps.is_available() and RLE_WEIGHT.dtype != np.float32:
+    raise SystemExit(
+        "ERROR: This Ultralytics release still has the YOLO26 Pose MPS float64 bug. "
+        "Training on Apple MPS would fail; install a fixed release and rerun setup."
+    )
+PY
 
 echo
 echo "Installing frontend packages from package-lock.json..."

@@ -38,7 +38,7 @@ cd "detect anything"
 bash setup-scripts/setup-new-machine.sh
 ```
 
-สคริปต์ตรวจระบบและ GPU แล้วเลือก PyTorch ที่เหมาะสม ติดตั้ง Backend ใน `venv/`, ติดตั้ง Frontend ด้วย `npm ci` และตรวจ `npm run build`, ดาวน์โหลดและตรวจ `yolo26n-pose.pt`, `yolo26x-pose.pt` และ `yolo26s.pt` ที่ root โปรเจกต์ จากนั้นสำรอง SQLite เดิมก่อนทำ `alembic upgrade head` ต้องมี Git, Python 3.11/3.12, Node.js 20+ และ npm อยู่ก่อน ถ้ายังไม่มี root `.env` สคริปต์จะสร้างจาก `.env.example` พร้อม JWT secret แบบสุ่มโดยไม่แสดง secret; ถ้ามีอยู่แล้วจะไม่เขียนทับ หากใช้สคริปต์นี้แล้วข้ามขั้นตอนติดตั้ง 2-5 ด้านล่างได้สำหรับโมเดลค่าเริ่มต้น รุ่นอื่นที่เลือกเทรนจะดาวน์โหลดเมื่อใช้งาน
+สคริปต์ตรวจระบบและ GPU แล้วเลือก PyTorch ที่เหมาะสม ติดตั้ง Backend ใน `venv/`, อัปเกรด Ultralytics เป็นรุ่น stable ล่าสุดที่รองรับ YOLO26 Pose บน MPS โดยไม่เปลี่ยน PyTorch build ที่เลือกไว้, ติดตั้ง Frontend ด้วย `npm ci` และตรวจ `npm run build`, ดาวน์โหลดและตรวจ `yolo26n-pose.pt`, `yolo26x-pose.pt` และ `yolo26s.pt` ที่ root โปรเจกต์ จากนั้นสำรอง SQLite เดิมก่อนทำ `alembic upgrade head` ต้องมี Git, Python 3.11/3.12, Node.js 20+ และ npm อยู่ก่อน ถ้ายังไม่มี root `.env` สคริปต์จะสร้างจาก `.env.example` พร้อม JWT secret แบบสุ่มโดยไม่แสดง secret; ถ้ามีอยู่แล้วจะไม่เขียนทับ หากใช้สคริปต์นี้แล้วข้ามขั้นตอนติดตั้ง 2-5 ด้านล่างได้สำหรับโมเดลค่าเริ่มต้น รุ่นอื่นที่เลือกเทรนจะดาวน์โหลดเมื่อใช้งาน
 
 ตรวจว่าเครื่องจะใช้ทางเลือกใดโดยไม่ติดตั้งหรือแก้ฐานข้อมูลได้ด้วย `bash setup-scripts/setup-new-machine.sh --check`
 

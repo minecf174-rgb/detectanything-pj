@@ -13,7 +13,7 @@ dependencies = [
   "pydantic-settings>=2.4.0",
   "PyJWT>=2.10.0",
   "pwdlib[argon2]>=0.2.1",
-  "ultralytics>=8.4.117",
+  "ultralytics>=8.4.155",
   "segment-anything @ git+https://github.com/facebookresearch/segment-anything.git",
   "sam-2 @ git+https://github.com/facebookresearch/sam2.git",
   "torch>=2.6.0",
