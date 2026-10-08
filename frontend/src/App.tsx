@@ -314,6 +314,7 @@ export function App() {
   const [modelDownloadFormats, setModelDownloadFormats] = useState<Record<number, ModelDownloadFormat>>({});
   const [modelActionsOpenId, setModelActionsOpenId] = useState<number | null>(null);
   const [draftBoxes, setDraftBoxes] = useState<DraftBox[]>([]);
+  const [savingBoxes, setSavingBoxes] = useState<DraftBox[]>([]);
   const [poseCollecting, setPoseCollecting] = useState(false);
   const [posePoints, setPosePoints] = useState<PosePoint[]>([]);
   const [poseVisibilityMode, setPoseVisibilityMode] = useState<PoseVisibilityMode>("visible");
@@ -350,6 +351,7 @@ export function App() {
   const [operationProgress, setOperationProgress] = useState<OperationProgress | null>(null);
   const [annotationSaveState, setAnnotationSaveState] = useState<"idle" | "pending" | "saving" | "saved" | "error">("idle");
   const [drawingBox, setDrawingBox] = useState(false);
+  const [imageSwitching, setImageSwitching] = useState(false);
   const annotationSavePromise = useRef<Promise<boolean> | null>(null);
   const reviewShortcutInFlight = useRef(false);
   const projectRequestId = useRef(0);
@@ -440,17 +442,26 @@ export function App() {
 
   const selectAnnotationImage = async (imageId: number) => {
     if (imageId === selectedImageId) return true;
+    if (annotationSavePromise.current) {
+      setStatus("Saving labels for this image. You can keep drawing; change images when the save finishes.");
+      return false;
+    }
     if (poseCollecting && posePoints.length > 0) {
       setStatus("Finish or cancel the current pose before changing images");
       return false;
     }
-    if (!(await saveManualAnnotation())) return false;
-    if (poseCollecting) {
-      setPoseCollecting(false);
-      setPosePoints([]);
+    setImageSwitching(true);
+    try {
+      if (!(await saveManualAnnotation())) return false;
+      if (poseCollecting) {
+        setPoseCollecting(false);
+        setPosePoints([]);
+      }
+      setSelectedImageId(imageId);
+      return true;
+    } finally {
+      setImageSwitching(false);
     }
-    setSelectedImageId(imageId);
-    return true;
   };
 
   const navigateSelectedImage = (direction: -1 | 1) => {
@@ -539,6 +550,8 @@ export function App() {
     setModelImportError(null);
     setAutoJobs([]);
     setDraftBoxes([]);
+    setSavingBoxes([]);
+    setImageSwitching(false);
     setPoseCollecting(false);
     setPosePoints([]);
     setPoseVisibilityMode("visible");
@@ -647,6 +660,7 @@ export function App() {
 
   useEffect(() => {
     setDraftBoxes([]);
+    setSavingBoxes([]);
     setAnnotationSaveState("idle");
     setDrawingBox(false);
     setReviewSetId(null);
@@ -772,7 +786,7 @@ export function App() {
       } else if (editableSet && selectedReviewBoxIndex != null) {
         event.preventDefault();
         deleteSelectedReviewBox();
-      } else if (!poseCollecting && draftBoxes.length > 0 && annotationSaveState !== "saving") {
+      } else if (!poseCollecting && draftBoxes.length > 0) {
         event.preventDefault();
         undoDraftBox();
       }
@@ -1062,7 +1076,7 @@ export function App() {
   };
 
   const saveManualAnnotation = async (): Promise<boolean> => {
-    if (annotationSavePromise.current) return annotationSavePromise.current;
+    if (annotationSavePromise.current) return false;
     if (draftBoxes.length === 0) return true;
     if (!selectedImageId || annotationImageId !== selectedImageId) {
       setAnnotationSaveState("error");
@@ -1074,6 +1088,8 @@ export function App() {
     const pendingIds = pendingSuggestions.map((set) => set.annotation_set_id);
     const operation = (async () => {
       setAnnotationSaveState("saving");
+      setSavingBoxes(boxesToSave);
+      setDraftBoxes((current) => current.slice(boxesToSave.length));
       try {
         const newBoxes = boxesToSave.map((box) => ({ ...box, confidence: null }));
         // Each revision is a complete snapshot, not a patch to the previous labels.
@@ -1099,7 +1115,7 @@ export function App() {
             ? { ...set, status: "REJECTED" }
             : set,
         ), saved]);
-        setDraftBoxes((current) => current.slice(boxesToSave.length));
+        setSavingBoxes([]);
         setAnnotationSaveState("saved");
         setStatus(saveMessage);
         setImageAnnotationStatuses((current) => [
@@ -1115,6 +1131,8 @@ export function App() {
         ]);
         return true;
       } catch (error) {
+        setDraftBoxes((current) => [...boxesToSave, ...current]);
+        setSavingBoxes([]);
         setAnnotationSaveState("error");
         setStatus(`Labels not saved: ${errorMessage(error)}`);
         return false;
@@ -1131,6 +1149,10 @@ export function App() {
     const timer = window.setTimeout(() => { void saveManualAnnotation(); }, 900);
     return () => window.clearTimeout(timer);
   }, [annotationSaveState, draftBoxes, drawingBox, editableSet, poseProject, selectedImageId]);
+
+  useEffect(() => {
+    if (!poseProject && annotationSaveState === "saved" && draftBoxes.length > 0) setAnnotationSaveState("pending");
+  }, [annotationSaveState, draftBoxes.length, poseProject]);
 
   useEffect(() => {
     if (draftBoxes.length === 0 && annotationSaveState !== "saving") return;
@@ -2044,7 +2066,7 @@ export function App() {
             </main>
           )}
 
-          {workspaceSection === "annotate" && <main className="workspace annotation-workspace">
+          {workspaceSection === "annotate" && <main className={`workspace annotation-workspace${editableSet ? " is-editing" : ""}`}>
         <aside className="sidebar">
           <SectionTitle title="Classes" />
           <div className="class-form">
@@ -2101,9 +2123,6 @@ export function App() {
             {poseProject && <button className="annotation-primary-action" onClick={startPoseCollection} disabled={!selectedImageId || selectedClassId == null || busy || !!editableSet || poseCollecting} title={`Start a pose (${shortcuts.addPose || "unassigned"}), then click 17 body keypoints`}>
               <Plus size={16} /> Add pose{shortcuts.addPose ? ` · ${shortcuts.addPose}` : ""}
             </button>}
-            {latestApproved && <button onClick={startManualEditor} disabled={busy || !!editableSet || poseCollecting || !!drawingBox || draftBoxes.length > 0 || annotationSaveState === "saving"} title={`Edit saved labels (${shortcuts.editSavedLabels || "unassigned"})`}>
-              <Settings2 size={16} /> Edit labels{shortcuts.editSavedLabels ? ` · ${shortcuts.editSavedLabels}` : ""}
-            </button>}
             {selectedImage && annotationImageId === selectedImageId && latestImageAnnotationSet?.is_negative && (
               <div className="annotation-negative-status"><Check size={15} /> Verified negative</div>
             )}
@@ -2116,7 +2135,7 @@ export function App() {
               )}
             {!poseProject && selectedImage && (
               <div className={`annotation-save-state ${annotationSaveState}`} role="status" aria-live="polite">
-                <span>{annotationSaveState === "saving" ? "Saving labels…" : annotationSaveState === "error" ? "Save failed · labels kept here" :
+                <span>{annotationSaveState === "saving" ? `Saving labels…${draftBoxes.length > 0 ? ` ${draftBoxes.length} more queued` : " keep drawing"}` : annotationSaveState === "error" ? "Save failed · labels kept here" :
                   draftBoxes.length > 0 ? "Unsaved labels" : annotationSaveState === "saved" ? "Saved" : "Draw a box to label"}</span>
                 {draftBoxes.length > 0 && annotationSaveState !== "saving" && (
                   <div className="annotation-save-actions">
@@ -2150,10 +2169,19 @@ export function App() {
         </aside>
 
         <section className="canvas-column">
+          {selectedImage && (
+            <nav className="annotation-image-navigation" aria-label="Navigate annotation images">
+              <button className="icon-button" onClick={() => navigateSelectedImage(-1)} disabled={busy || selectedImageIndex <= 1} title={`Previous image (${shortcuts.previousImage || "unassigned"})`} aria-label="Previous image" type="button"><ChevronLeft size={20} /></button>
+              <button className="annotation-image-position" onClick={() => setImageSelectorOpen(true)} disabled={busy} title="Open image selector" type="button">Image {selectedImageIndex} of {images.length}</button>
+              <button className="annotation-copy-previous" onClick={() => void copyPreviousLabels()} disabled={busy || selectedImageIndex <= 1 || !!editableSet || poseCollecting || draftBoxes.length > 0 || visibleAnnotations.some((annotationSet) => annotationSet.status !== "REJECTED" && annotationSet.annotations.length > 0)} title={selectedImageIndex <= 1 ? "No previous image" : "Copy labels from the previous image as an editable draft"} type="button"><Copy size={17} /> Copy previous labels</button>
+              {latestApproved && <button className="annotation-edit-action" onClick={startManualEditor} disabled={busy || !!editableSet || poseCollecting || drawingBox || draftBoxes.length > 0 || annotationSaveState === "saving"} title={`Edit saved labels (${shortcuts.editSavedLabels || "unassigned"})`} type="button"><Settings2 size={16} /> Edit labels <kbd>{shortcuts.editSavedLabels || "—"}</kbd></button>}
+              <button className="icon-button" onClick={() => navigateSelectedImage(1)} disabled={busy || selectedImageIndex >= images.length} title={`Next image (${shortcuts.nextImage || "unassigned"})`} aria-label="Next image" type="button"><ChevronRight size={20} /></button>
+            </nav>
+          )}
           <AnnotationCanvas
             image={selectedImage}
             boxes={editableSet ? [] : latestApproved?.annotations ?? []}
-            draftBoxes={draftBoxes}
+            draftBoxes={[...savingBoxes, ...draftBoxes]}
             suggestions={editableSet ? [] : pendingSuggestions.flatMap((set) => set.annotations)}
             editableBoxes={editableSet ? reviewBoxes : []}
             selectedEditableIndex={selectedReviewBoxIndex}
@@ -2164,7 +2192,7 @@ export function App() {
               if (editableSet) addReviewBox(box);
               else {
                 setDraftBoxes((current) => [...current, box]);
-                if (!poseProject) setAnnotationSaveState("pending");
+                if (!poseProject && !annotationSavePromise.current) setAnnotationSaveState("pending");
               }
             }}
             onDrawingChange={setDrawingBox}
@@ -2178,117 +2206,19 @@ export function App() {
             poseEditing={poseProject && !!editableSet && selectedReviewBoxIndex != null}
             poseEditingKeypointIndex={selectedPoseKeypointIndex}
             onPoseEditPoint={(point) => updateSelectedPoseKeypoint(point, poseEditVisibilityMode === "visible" ? 2 : 1)}
-            busy={busy || annotationSaveState === "saving" || annotationImageId !== selectedImageId}
+            busy={busy || imageSwitching || (poseProject && annotationSaveState === "saving") || annotationImageId !== selectedImageId}
           />
-          {selectedImage && (
-            <nav className="annotation-image-navigation" aria-label="Navigate annotation images">
-              <button
-                className="icon-button"
-                onClick={() => navigateSelectedImage(-1)}
-                disabled={busy || selectedImageIndex <= 1}
-                title={`Previous image (${shortcuts.previousImage || "unassigned"})`}
-                aria-label="Previous image"
-                type="button"
-              ><ChevronLeft size={20} /></button>
-              <button
-                className="annotation-image-position"
-                onClick={() => setImageSelectorOpen(true)}
-                disabled={busy}
-                title="Open image selector"
-                type="button"
-              >Image {selectedImageIndex} of {images.length}</button>
-              <button
-                className="annotation-copy-previous"
-                onClick={() => void copyPreviousLabels()}
-                disabled={
-                  busy
-                  || selectedImageIndex <= 1
-                  || !!editableSet
-                  || poseCollecting
-                  || draftBoxes.length > 0
-                  || visibleAnnotations.some((annotationSet) => (
-                    annotationSet.status !== "REJECTED" && annotationSet.annotations.length > 0
-                  ))
-                }
-                title={selectedImageIndex <= 1 ? "No previous image" : "Copy labels from the previous image as an editable draft"}
-                type="button"
-              ><Copy size={17} /> Copy previous labels</button>
-              <button
-                className="icon-button"
-                onClick={() => navigateSelectedImage(1)}
-                disabled={busy || selectedImageIndex >= images.length}
-                title={`Next image (${shortcuts.nextImage || "unassigned"})`}
-                aria-label="Next image"
-                type="button"
-              ><ChevronRight size={20} /></button>
-            </nav>
-          )}
-          {editableSet && (
-            <div className="review-editor">
-              <div className="review-editor-summary">
-                <strong>{editingManualLabels ? `Edit revision ${editableSet.revision}` : `Review set ${editableSet.annotation_set_id}`}</strong>
-                <span>{reviewBoxes.length} boxes</span>
+          {pendingSuggestions.length > 0 && <section className="review-band" aria-label="Review queue">
+            <SectionTitle title="Review Queue" />
+            {pendingSuggestions.map((set) => <div className="review-row" key={set.annotation_set_id}>
+              <span>Set {set.annotation_set_id} · revision {set.revision} · {set.annotations.length} boxes</span>
+              <div>
+                <button onClick={() => { void review(set, "accept"); }} disabled={busy || !!editableSet || draftBoxes.length > 0 || poseCollecting || annotationSaveState === "saving"}><Check size={16} /> Accept all{pendingSuggestions.length === 1 && shortcuts.acceptSuggestion ? ` · ${shortcuts.acceptSuggestion}` : ""}</button>
+                <button onClick={() => startReviewEditor(set)} disabled={busy || !!editableSet || draftBoxes.length > 0 || poseCollecting || annotationSaveState === "saving"}><Save size={16} /> Edit{pendingSuggestions.length === 1 && shortcuts.editSuggestion ? ` · ${shortcuts.editSuggestion}` : ""}</button>
+                <button onClick={() => { void review(set, "reject"); }} disabled={busy || !!editableSet || draftBoxes.length > 0 || poseCollecting || annotationSaveState === "saving"}><X size={16} /> Reject all{pendingSuggestions.length === 1 && shortcuts.rejectSuggestion ? ` · ${shortcuts.rejectSuggestion}` : ""}</button>
               </div>
-              <label className="review-class-field">
-                Selected class
-                <select
-                  value={selectedReviewBoxIndex == null ? "" : reviewBoxes[selectedReviewBoxIndex]?.class_id ?? ""}
-                  onChange={(event) => changeSelectedReviewClass(Number(event.target.value))}
-                  disabled={selectedReviewBoxIndex == null}
-                >
-                  <option value="" disabled>Select a box</option>
-                  {classes.map((labelClass) => (
-                    <option key={labelClass.class_id} value={labelClass.class_id}>{labelClass.name}</option>
-                  ))}
-                </select>
-              </label>
-              {poseProject && reviewBoxes.length > 0 && (
-                <div className="pose-editor-controls">
-                  <label>
-                    <span>Person</span>
-                    <select
-                      value={selectedReviewBoxIndex ?? ""}
-                      onChange={(event) => {
-                        setSelectedReviewBoxIndex(Number(event.target.value));
-                        setSelectedPoseKeypointIndex(0);
-                      }}
-                    >
-                      {reviewBoxes.map((_, index) => <option value={index} key={index}>Person {index + 1}</option>)}
-                    </select>
-                  </label>
-                  <label>
-                    <span>Keypoint</span>
-                    <select data-pose-keypoint-select="true" value={selectedPoseKeypointIndex} onChange={(event) => setSelectedPoseKeypointIndex(Number(event.target.value))}>
-                      {POSE_KEYPOINT_NAMES.map((name, index) => (
-                        <option value={index} key={name}>{index + 1}. {name}</option>
-                      ))}
-                    </select>
-                  </label>
-                  <div className="pose-visibility-toggle" aria-label="Keypoint visibility">
-                    <button className={poseEditVisibilityMode === "visible" ? "active" : ""} onClick={() => setPoseEditVisibilityMode("visible")} type="button">Visible{shortcuts.poseEditVisible ? ` · ${shortcuts.poseEditVisible}` : ""}</button>
-                    <button className={poseEditVisibilityMode === "occluded" ? "active" : ""} onClick={() => setPoseEditVisibilityMode("occluded")} type="button">Occluded{shortcuts.poseEditOccluded ? ` · ${shortcuts.poseEditOccluded}` : ""}</button>
-                    <button onClick={() => updateSelectedPoseKeypoint(null, 0)} type="button">Outside frame{shortcuts.poseEditOutside ? ` · ${shortcuts.poseEditOutside}` : ""}</button>
-                  </div>
-                  <span className="pose-editor-hint">{shortcuts.previousPoint || "—"} previous · {shortcuts.nextPoint || "—"} next. Choose Visible or Occluded, then click the image; Outside frame advances immediately.</span>
-                </div>
-              )}
-              <button className="danger-button" onClick={deleteSelectedReviewBox} disabled={selectedReviewBoxIndex == null || busy} title={`Delete selected box (${shortcuts.deleteBox || "unassigned"})`}>
-                <Trash2 size={16} /> Delete box
-              </button>
-              <button onClick={undoReviewEdit} disabled={reviewHistory.length === 0 || busy} title="Undo review edit">
-                <Undo2 size={16} /> Undo
-              </button>
-              <button onClick={resetReviewBoxes} disabled={busy} title="Restore labels before editing">
-                <RefreshCw size={16} /> Reset
-              </button>
-              <button className="primary" onClick={saveEditedLabels} disabled={busy}>
-                <Save size={16} /> {editingManualLabels ? "Save revision" : "Save corrected"} <kbd>{shortcuts.save || "—"}</kbd>
-              </button>
-              <button onClick={cancelReviewEditor} disabled={busy} title={`Cancel label editing (${shortcuts.cancelEdit || "unassigned"})`}>
-                <X size={16} /> Cancel <kbd>{shortcuts.cancelEdit || "—"}</kbd>
-              </button>
-            </div>
-          )}
+            </div>)}
+          </section>}
           {!editableSet && draftBoxes.length > 0 && (
             <div className="draft-list">
               {draftBoxes.map((box, index) => {
@@ -2297,7 +2227,7 @@ export function App() {
                   <div className="draft-row" key={`${box.class_id}-${box.x_min}-${box.y_min}-${index}`}>
                     <span className="swatch" style={{ background: labelClass?.color ?? "#16a34a" }} />
                     <span>#{index + 1} {labelClass?.name ?? `class ${box.class_id}`}{box.keypoints ? " · 17 keypoints" : ""}</span>
-                    <button className="mini-danger" onClick={() => removeDraftBox(index)} disabled={annotationSaveState === "saving"} title="Delete this box">
+                    <button className="mini-danger" onClick={() => removeDraftBox(index)} title="Delete this box">
                       <Trash2 size={14} />
                     </button>
                   </div>
@@ -2308,6 +2238,40 @@ export function App() {
         </section>
 
         <aside className="rightbar">
+          {editableSet && <div className="review-editor">
+            <div className="review-editor-summary">
+              <strong>{editingManualLabels ? `Edit revision ${editableSet.revision}` : `Review set ${editableSet.annotation_set_id}`}</strong>
+              <span>{reviewBoxes.length} boxes · select one on the image</span>
+            </div>
+            <div className="review-editor-main">
+              <label className="review-class-field">Selected class
+                <select value={selectedReviewBoxIndex == null ? "" : reviewBoxes[selectedReviewBoxIndex]?.class_id ?? ""} onChange={(event) => changeSelectedReviewClass(Number(event.target.value))} disabled={selectedReviewBoxIndex == null}>
+                  <option value="" disabled>Select a box</option>
+                  {classes.map((labelClass) => <option key={labelClass.class_id} value={labelClass.class_id}>{labelClass.name}</option>)}
+                </select>
+              </label>
+              {poseProject && reviewBoxes.length > 0 && <div className="pose-editor-controls">
+                <label><span>Person</span><select value={selectedReviewBoxIndex ?? ""} onChange={(event) => { setSelectedReviewBoxIndex(Number(event.target.value)); setSelectedPoseKeypointIndex(0); }}>{reviewBoxes.map((_, index) => <option value={index} key={index}>Person {index + 1}</option>)}</select></label>
+                <label><span>Keypoint</span><select data-pose-keypoint-select="true" value={selectedPoseKeypointIndex} onChange={(event) => setSelectedPoseKeypointIndex(Number(event.target.value))}>{POSE_KEYPOINT_NAMES.map((name, index) => <option value={index} key={name}>{index + 1}. {name}</option>)}</select></label>
+                <div className="pose-visibility-toggle" aria-label="Keypoint visibility">
+                  <button className={poseEditVisibilityMode === "visible" ? "active" : ""} onClick={() => setPoseEditVisibilityMode("visible")} type="button">Visible{shortcuts.poseEditVisible ? ` · ${shortcuts.poseEditVisible}` : ""}</button>
+                  <button className={poseEditVisibilityMode === "occluded" ? "active" : ""} onClick={() => setPoseEditVisibilityMode("occluded")} type="button">Occluded{shortcuts.poseEditOccluded ? ` · ${shortcuts.poseEditOccluded}` : ""}</button>
+                  <button onClick={() => updateSelectedPoseKeypoint(null, 0)} type="button">Outside frame{shortcuts.poseEditOutside ? ` · ${shortcuts.poseEditOutside}` : ""}</button>
+                </div>
+                <span className="pose-editor-hint">{shortcuts.previousPoint || "—"} previous · {shortcuts.nextPoint || "—"} next. Choose Visible or Occluded, then click the image; Outside frame advances immediately.</span>
+              </div>}
+              <div className="review-editor-tools">
+                <button className="danger-button" onClick={deleteSelectedReviewBox} disabled={selectedReviewBoxIndex == null || busy} title={`Delete selected box (${shortcuts.deleteBox || "unassigned"})`}><Trash2 size={16} /> Delete box</button>
+                <button onClick={undoReviewEdit} disabled={reviewHistory.length === 0 || busy} title="Undo review edit"><Undo2 size={16} /> Undo</button>
+                <button onClick={resetReviewBoxes} disabled={busy} title="Restore labels before editing"><RefreshCw size={16} /> Reset</button>
+              </div>
+            </div>
+            <div className="review-editor-footer">
+              <button className="primary" onClick={saveEditedLabels} disabled={busy}><Save size={16} /> {editingManualLabels ? "Save revision" : "Save corrected"} <kbd>{shortcuts.save || "—"}</kbd></button>
+              <button onClick={cancelReviewEditor} disabled={busy} title={`Cancel label editing (${shortcuts.cancelEdit || "unassigned"})`}><X size={16} /> Cancel <kbd>{shortcuts.cancelEdit || "—"}</kbd></button>
+            </div>
+          </div>}
+          {!editableSet && <>
           <Panel title="Auto Label">
             <label className="auto-label-model-field">
               <span>Model version</span>
@@ -2337,6 +2301,7 @@ export function App() {
             <Metric label="Versions" value={datasets.length} />
             <Metric label="Latest" value={latestDataset ? `v${latestDataset.version_number}` : "-"} />
           </Panel>
+          </>}
         </aside>
         </main>}
 
@@ -2593,21 +2558,6 @@ export function App() {
         />
       )}
 
-      {activeView === "workspace" && workspaceSection === "annotate" && (
-        <section className="review-band">
-          <SectionTitle title="Review Queue" />
-          {pendingSuggestions.length === 0 ? <span className="muted">No pending model suggestions</span> : pendingSuggestions.map((set) => (
-            <div className="review-row" key={set.annotation_set_id}>
-              <span>Set {set.annotation_set_id} · revision {set.revision} · {set.annotations.length} boxes</span>
-              <div>
-                <button onClick={() => { void review(set, "accept"); }} disabled={busy || draftBoxes.length > 0 || poseCollecting || annotationSaveState === "saving"}><Check size={16} /> Accept all{pendingSuggestions.length === 1 && shortcuts.acceptSuggestion ? ` · ${shortcuts.acceptSuggestion}` : ""}</button>
-                <button onClick={() => startReviewEditor(set)} disabled={busy || draftBoxes.length > 0 || poseCollecting || annotationSaveState === "saving" || reviewSetId === set.annotation_set_id}><Save size={16} /> Edit{pendingSuggestions.length === 1 && shortcuts.editSuggestion ? ` · ${shortcuts.editSuggestion}` : ""}</button>
-                <button onClick={() => { void review(set, "reject"); }} disabled={busy || draftBoxes.length > 0 || poseCollecting || annotationSaveState === "saving"}><X size={16} /> Reject all{pendingSuggestions.length === 1 && shortcuts.rejectSuggestion ? ` · ${shortcuts.rejectSuggestion}` : ""}</button>
-              </div>
-            </div>
-          ))}
-        </section>
-      )}
       {operationProgress && (
         <OperationProgressModal
           progress={operationProgress}
@@ -2803,6 +2753,7 @@ function ImageSelectorModal({
   const [rangeStart, setRangeStart] = useState(initialStart);
   const [rangeEnd, setRangeEnd] = useState(Math.min(images.length, initialStart + batchSize));
   const [previews, setPreviews] = useState<Record<number, AnnotationSet | null>>({});
+  const dialogRef = useRef<HTMLElement | null>(null);
   const selectedRef = useRef<HTMLButtonElement | null>(null);
   const gridRef = useRef<HTMLDivElement | null>(null);
   const topSentinelRef = useRef<HTMLDivElement | null>(null);
@@ -2848,6 +2799,19 @@ function ImageSelectorModal({
     .map((image) => image.image_id);
   const allVisiblePendingSelected = visiblePendingImageIds.length > 0
     && visiblePendingImageIds.every((imageId) => selectedPendingImageIds.has(imageId));
+
+  useEffect(() => {
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key !== "Escape" || event.repeat || busy) return;
+      const dialogs = document.querySelectorAll('[role="dialog"][aria-modal="true"]');
+      if (dialogs[dialogs.length - 1] !== dialogRef.current) return;
+      event.preventDefault();
+      if (view === "negative") setView("browse");
+      else onClose();
+    };
+    window.addEventListener("keydown", closeOnEscape);
+    return () => window.removeEventListener("keydown", closeOnEscape);
+  }, [busy, onClose, view]);
 
   useEffect(() => {
     let active = true;
@@ -2969,7 +2933,7 @@ function ImageSelectorModal({
   };
 
   return <div className="results-modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>
-    <section className={`image-selector-modal${view === "negative" ? " review-mode" : ""}`} role="dialog" aria-modal="true" aria-label={view === "negative" ? "Review no-box images" : "Select image"}>
+    <section ref={dialogRef} className={`image-selector-modal${view === "negative" ? " review-mode" : ""}`} role="dialog" aria-modal="true" aria-label={view === "negative" ? "Review no-box images" : "Select image"}>
       <header className="image-manager-header">
         {view === "negative" && <button className="icon-button" onClick={() => setView("browse")} title="Back to images" aria-label="Back to images"><ArrowLeft size={18} /></button>}
         <div><h3>{view === "negative" ? "Review no-box images" : "Select image"}</h3><p>{view === "negative" ? "Inspect each image before confirming it contains no objects." : "Choose an image or review model results with no boxes."}</p></div>
@@ -3068,7 +3032,7 @@ function ImageSelectorModal({
           <button className="danger-button" onClick={onRejectAll} disabled={busy}><Trash2 size={16} /> Reject all ({pendingImageIds.size})</button>
         </div>}
       </footer>
-      </> : <NegativeReviewContent images={images} annotationStatuses={annotationStatuses} busy={busy} shortcuts={shortcuts} onConfirm={onConfirmNegative} onDraw={onDrawNegative} onBack={() => setView("browse")} />}
+      </> : <NegativeReviewContent images={images} annotationStatuses={annotationStatuses} busy={busy} shortcuts={shortcuts} onConfirm={onConfirmNegative} onDraw={onDrawNegative} />}
     </section>
   </div>;
 }
@@ -4187,14 +4151,13 @@ function TestPoseSkeleton({
   );
 }
 
-function NegativeReviewContent({ images, annotationStatuses, busy, shortcuts, onConfirm, onDraw, onBack }: {
+function NegativeReviewContent({ images, annotationStatuses, busy, shortcuts, onConfirm, onDraw }: {
   images: ImageItem[];
   annotationStatuses: ImageAnnotationStatus[];
   busy: boolean;
   shortcuts: ShortcutBindings;
   onConfirm: (imageId: number) => void;
   onDraw: (imageId: number) => void;
-  onBack: () => void;
 }) {
   const candidates = useMemo(() => {
     const noBoxIds = new Set(annotationStatuses.filter((status) =>
@@ -4213,10 +4176,11 @@ function NegativeReviewContent({ images, annotationStatuses, busy, shortcuts, on
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
+      // Esc belongs to the parent modal, even if a user mapped another action to it.
+      if (event.key === "Escape") return;
       if (busy) return;
       const target = event.target as HTMLElement | null;
       if (target?.isContentEditable || ["INPUT", "SELECT", "TEXTAREA"].includes(target?.tagName ?? "")) return;
-      if (event.key === "Escape") { onBack(); return; }
       if (matchesShortcut(event, shortcuts, "verifyNegative")) {
         event.preventDefault();
         if (!image || event.repeat || confirmShortcutInFlight.current) return;
@@ -4235,7 +4199,7 @@ function NegativeReviewContent({ images, annotationStatuses, busy, shortcuts, on
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [busy, candidates.length, image, onBack, onConfirm, shortcuts]);
+  }, [busy, candidates.length, image, onConfirm, shortcuts]);
 
   return <div className="image-selector-review-view">
       <div className="negative-review-main">
@@ -4754,6 +4718,7 @@ function AnnotationCanvas({
   const [start, setStart] = useState<{ x: number; y: number } | null>(null);
   const [current, setCurrent] = useState<{ x: number; y: number } | null>(null);
   const [imageReady, setImageReady] = useState(false);
+  const [naturalSize, setNaturalSize] = useState<{ width: number; height: number } | null>(null);
   const [isFileDragActive, setIsFileDragActive] = useState(false);
   const [editDrag, setEditDrag] = useState<{
     index: number;
@@ -4763,10 +4728,15 @@ function AnnotationCanvas({
   } | null>(null);
   const imageId = image?.image_id ?? null;
   const imageUrl = useProtectedImageUrl(image);
-  const imageFrame = useMemo(() => getImageFrame(image), [image]);
+  const imageWidth = naturalSize?.width ?? image?.width ?? 1;
+  const imageHeight = naturalSize?.height ?? image?.height ?? 1;
+  const imageAspect = imageWidth > 0 && imageHeight > 0 ? imageWidth / imageHeight : 1;
+  // The canvas itself follows the image's aspect ratio, so image coordinates fill it exactly.
+  const imageFrame: ImageFrame = { left: 0, top: 0, width: 1, height: 1 };
 
   useEffect(() => {
     setImageReady(false);
+    setNaturalSize(null);
     setStart(null);
     setCurrent(null);
     setEditDrag(null);
@@ -4815,7 +4785,8 @@ function AnnotationCanvas({
 
   return (
     <div
-      className={isFileDragActive ? "annotation-canvas file-drag-active" : "annotation-canvas"}
+      className={`annotation-canvas${image ? " has-image" : ""}${isFileDragActive ? " file-drag-active" : ""}`}
+      style={image ? { aspectRatio: `${imageWidth} / ${imageHeight}`, width: `min(100%, ${78 * imageAspect}vh)` } : undefined}
       ref={ref}
       onDragEnter={(event) => {
         if (!canHandleFiles(event)) return;
@@ -4898,7 +4869,10 @@ function AnnotationCanvas({
             className={imageReady ? "" : "image-hidden"}
             src={imageUrl}
             alt={image.original_filename ?? "uploaded"}
-            onLoad={() => setImageReady(true)}
+            onLoad={(event) => {
+              setNaturalSize({ width: event.currentTarget.naturalWidth, height: event.currentTarget.naturalHeight });
+              setImageReady(true);
+            }}
             onError={() => setImageReady(false)}
           /> : <div className="empty">Loading image...</div>}
           {!imageReady && <div className="empty">Image file missing. Upload this image again.</div>}

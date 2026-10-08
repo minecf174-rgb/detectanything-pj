@@ -1051,6 +1051,8 @@ label {
 }
 
 .canvas-column {
+  align-content: start;
+  align-self: start;
   display: grid;
   gap: 12px;
   min-width: 0;
@@ -1061,11 +1063,21 @@ label {
   background: #ffffff;
   border: 1px solid #d2dae5;
   border-radius: 8px;
-  display: grid;
+  display: flex;
   gap: 10px;
-  grid-template-columns: 40px minmax(0, 1fr) max-content 40px;
   padding: 8px;
 }
+
+.annotation-image-navigation .annotation-image-position { flex: 1 1 auto; }
+
+.annotation-edit-action {
+  background: #e8f0ff;
+  border-color: #9bbaff;
+  color: #1c5fd4;
+  white-space: nowrap;
+}
+
+.annotation-edit-action kbd { font-family: inherit; font-size: 11px; }
 
 .annotation-copy-previous {
   min-height: 40px;
@@ -1094,13 +1106,14 @@ label {
 
 @media (max-width: 700px) {
   .annotation-image-navigation {
+    display: grid;
     grid-template-columns: 40px minmax(0, 1fr) 40px;
   }
 
-  .annotation-copy-previous {
-    grid-column: 1 / -1;
-    grid-row: 2;
-  }
+  .annotation-image-navigation .annotation-image-position { grid-column: 2; grid-row: 1; min-width: 0; }
+  .annotation-image-navigation .icon-button:last-child { grid-column: 3; grid-row: 1; }
+  .annotation-copy-previous,
+  .annotation-edit-action { grid-column: 1 / -1; justify-content: center; }
 }
 
 h2 {
@@ -1181,14 +1194,7 @@ h2 {
 
 .annotation-canvas {
   aspect-ratio: 1 / 1;
-  background:
-    linear-gradient(45deg, #eef2f6 25%, transparent 25%),
-    linear-gradient(-45deg, #eef2f6 25%, transparent 25%),
-    linear-gradient(45deg, transparent 75%, #eef2f6 75%),
-    linear-gradient(-45deg, transparent 75%, #eef2f6 75%),
-    #ffffff;
-  background-position: 0 0, 0 12px, 12px -12px, -12px 0;
-  background-size: 24px 24px;
+  background: #f3f6fa;
   border: 1px solid #d2dae5;
   border-radius: 8px;
   min-height: 520px;
@@ -1196,6 +1202,13 @@ h2 {
   position: relative;
   touch-action: none;
   user-select: none;
+}
+
+.annotation-canvas.has-image {
+  align-self: start;
+  height: auto;
+  justify-self: center;
+  min-height: 0;
 }
 
 .annotation-canvas.file-drag-active {
@@ -1317,7 +1330,7 @@ h2 {
 .annotation-canvas img {
   display: block;
   height: 100%;
-  object-fit: contain;
+  object-fit: fill;
   pointer-events: none;
   width: 100%;
 }
@@ -1871,11 +1884,18 @@ h2 {
 
 .review-band {
   background: #ffffff;
-  border-top: 1px solid #dfe5ee;
+  border: 1px solid #dfe5ee;
+  border-radius: 8px;
+  bottom: 12px;
+  box-shadow: 0 8px 24px rgba(38, 48, 68, 0.12);
   display: grid;
-  gap: 10px;
-  margin: 4px 18px 20px;
-  padding: 14px;
+  gap: 8px;
+  margin: 0;
+  max-height: min(36vh, 320px);
+  overflow-y: auto;
+  padding: 10px;
+  position: sticky;
+  z-index: 11;
 }
 
 .review-row {
@@ -1883,6 +1903,7 @@ h2 {
   border: 1px solid #e1e7ef;
   border-radius: 8px;
   display: flex;
+  flex-wrap: wrap;
   gap: 12px;
   justify-content: space-between;
   min-height: 50px;
@@ -1897,6 +1918,7 @@ h2 {
 
 .review-row > div {
   display: flex;
+  flex-wrap: wrap;
   gap: 8px;
 }
 
@@ -3642,6 +3664,60 @@ h2 {
   align-content: start;
 }
 
+.annotation-workspace.is-editing .rightbar {
+  align-self: start;
+  position: sticky;
+  top: 12px;
+}
+
+.annotation-workspace .review-editor {
+  align-items: stretch;
+  display: flex;
+  flex-direction: column;
+  flex-wrap: nowrap;
+  gap: 0;
+  max-height: calc(100dvh - 100px);
+  overflow: hidden;
+  padding: 0;
+}
+
+.annotation-workspace .review-editor-summary {
+  border-bottom: 1px solid #e5eaf1;
+  flex: 0 0 auto;
+  margin: 0;
+  padding: 14px;
+}
+
+.review-editor-main {
+  display: grid;
+  flex: 1 1 auto;
+  gap: 12px;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 14px;
+}
+
+.annotation-workspace .review-class-field,
+.annotation-workspace .pose-editor-controls label { width: 100%; }
+
+.annotation-workspace .pose-editor-controls { display: grid; gap: 10px; }
+.annotation-workspace .pose-visibility-toggle { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.annotation-workspace .pose-visibility-toggle button { justify-content: center; min-width: 0; }
+.annotation-workspace .pose-visibility-toggle button:last-child { grid-column: 1 / -1; }
+
+.review-editor-tools { display: flex; flex-wrap: wrap; gap: 8px; }
+.review-editor-tools button { flex: 1 1 auto; justify-content: center; }
+
+.review-editor-footer {
+  border-top: 1px solid #e5eaf1;
+  display: grid;
+  flex: 0 0 auto;
+  gap: 8px;
+  padding: 12px 14px;
+}
+
+.review-editor-footer button { justify-content: center; width: 100%; }
+
 .section-grid {
   align-items: start;
   display: grid;
@@ -4046,10 +4122,6 @@ h2 {
   padding: 0;
 }
 
-.review-band {
-  margin-left: 220px;
-}
-
 @media (max-width: 1180px) {
   body {
     min-width: 0;
@@ -4062,6 +4134,13 @@ h2 {
   .annotation-workspace {
     grid-template-columns: 210px minmax(380px, 1fr);
   }
+
+  .annotation-workspace.is-editing {
+    grid-template-columns: minmax(380px, 1fr) 280px;
+  }
+
+  .annotation-workspace.is-editing > .sidebar { display: none; }
+  .annotation-workspace.is-editing > .rightbar { grid-column: 2; grid-template-columns: 1fr; }
 
   .rightbar {
     grid-column: 1 / -1;
@@ -4197,16 +4276,15 @@ h2 {
     grid-template-columns: 1fr;
   }
 
+  .annotation-workspace.is-editing { grid-template-columns: minmax(0, 1fr); }
+  .annotation-workspace.is-editing > .rightbar { grid-column: 1; }
+
   .model-version-row {
     justify-items: stretch;
   }
 
   .model-version-icon {
     display: none;
-  }
-
-  .review-band {
-    margin-left: 0;
   }
 
   .workspace,
