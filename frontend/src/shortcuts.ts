@@ -17,6 +17,7 @@ export const SHORTCUT_DEFINITIONS: ShortcutDefinition[] = [
   { id: "nextImage", group: "Navigation", label: "Next image", description: "Move to the next image when no edit is open, including no-box review.", defaultKey: "ArrowRight", contexts: [...idle, "negative-review"] },
   { id: "save", group: "Editing", label: "Save labels", description: "Save a completed draft, or save the current revision/correction when editing.", defaultKey: "Mod+S", contexts: ["detect", "pose", "pose-drawing", ...editing] },
   { id: "cancelEdit", group: "Editing", label: "Cancel editing", description: "Close the revision/correction editor or cancel a pose being placed. Unsaved edits are discarded.", defaultKey: "Escape", contexts: ["pose-drawing", ...editing] },
+  { id: "undoAction", group: "Editing", label: "Undo last action", description: "Undo the last pose point, draft box, or label edit in the current editor.", defaultKey: "Mod+Z", contexts: ["detect", "pose", "pose-drawing", ...editing] },
   { id: "undoDraft", group: "Editing", label: "Undo draft", description: "Remove the last unsaved box or pose point.", defaultKey: "Backspace", contexts: ["detect", "pose", "pose-drawing"] },
   { id: "undoDraftAlt", group: "Editing", label: "Undo draft (alternate)", description: "Second key for removing the last unsaved box or pose point.", defaultKey: "Delete", contexts: ["detect", "pose", "pose-drawing"] },
   { id: "deleteBox", group: "Editing", label: "Delete selected box", description: "Remove the selected box while editing a revision/correction.", defaultKey: "Backspace", contexts: editing },
@@ -75,7 +76,7 @@ export function loadShortcuts(userId: number | undefined): ShortcutBindings {
     const bindings = Object.fromEntries(SHORTCUT_DEFINITIONS.map(({ id, defaultKey }) =>
       [id, typeof saved[id] === "string" ? saved[id] : defaultKey]
     ));
-    for (const id of ["poseEditVisible", "poseEditOccluded", "poseEditOutside", "verifyCurrentNegative", "editSavedLabels"]) {
+    for (const id of ["poseEditVisible", "poseEditOccluded", "poseEditOutside", "verifyCurrentNegative", "editSavedLabels", "undoAction"]) {
       if (typeof saved[id] !== "string" && shortcutConflict(bindings, id, bindings[id])) bindings[id] = "";
     }
     return bindings;

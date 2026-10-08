@@ -3643,6 +3643,12 @@ h2 {
   font-size: 10px;
 }
 
+.pose-sidebar-progress small {
+  color: #9a3412;
+  font-size: 10px;
+  font-weight: 700;
+}
+
 .pose-sidebar-progress button {
   min-height: 32px;
   padding: 0 8px;

@@ -82,6 +82,12 @@ type ReviewBox = DraftBox & {
   confidence: number | null;
 };
 
+type ReviewHistoryItem = {
+  boxes: ReviewBox[];
+  selectedBoxIndex: number | null;
+  selectedPointIndex: number;
+};
+
 type ImageFrame = {
   left: number;
   top: number;
@@ -321,7 +327,7 @@ export function App() {
   const [reviewSetId, setReviewSetId] = useState<number | null>(null);
   const [manualEditSetId, setManualEditSetId] = useState<number | null>(null);
   const [reviewBoxes, setReviewBoxes] = useState<ReviewBox[]>([]);
-  const [reviewHistory, setReviewHistory] = useState<ReviewBox[][]>([]);
+  const [reviewHistory, setReviewHistory] = useState<ReviewHistoryItem[]>([]);
   const [selectedReviewBoxIndex, setSelectedReviewBoxIndex] = useState<number | null>(null);
   const [selectedPoseKeypointIndex, setSelectedPoseKeypointIndex] = useState(0);
   const [poseEditVisibilityMode, setPoseEditVisibilityMode] = useState<PoseVisibilityMode>("visible");
@@ -745,16 +751,20 @@ export function App() {
   }, [poseCollecting]);
 
   const rememberReviewBoxes = useCallback(() => {
-    setReviewHistory((current) => [...current, reviewBoxes.map(cloneReviewBox)]);
-  }, [reviewBoxes]);
+    setReviewHistory((current) => [...current, {
+      boxes: reviewBoxes.map(cloneReviewBox),
+      selectedBoxIndex: selectedReviewBoxIndex,
+      selectedPointIndex: selectedPoseKeypointIndex,
+    }]);
+  }, [reviewBoxes, selectedReviewBoxIndex, selectedPoseKeypointIndex]);
 
   const undoReviewEdit = useCallback(() => {
     setReviewHistory((current) => {
       const previous = current[current.length - 1];
       if (!previous) return current;
-      setReviewBoxes(previous.map(cloneReviewBox));
-      setSelectedReviewBoxIndex(previous.length > 0 ? 0 : null);
-      setSelectedPoseKeypointIndex(0);
+      setReviewBoxes(previous.boxes.map(cloneReviewBox));
+      setSelectedReviewBoxIndex(previous.selectedBoxIndex);
+      setSelectedPoseKeypointIndex(previous.selectedPointIndex);
       return current.slice(0, -1);
     });
   }, []);
@@ -773,10 +783,21 @@ export function App() {
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
       const target = event.target as HTMLElement | null;
+      const undoActionKey = matchesShortcut(event, shortcuts, "undoAction");
+      const undoFromEditorSelect = undoActionKey && !!editableSet && target?.tagName === "SELECT" &&
+        !!target.closest(".review-editor");
       if (activeView !== "workspace" || workspaceSection !== "annotate" || busy ||
           document.querySelector('[role="dialog"][aria-modal="true"]') ||
-          target?.isContentEditable || ["INPUT", "SELECT", "TEXTAREA"].includes(target?.tagName ?? "") ||
+          target?.isContentEditable ||
+          (["INPUT", "SELECT", "TEXTAREA"].includes(target?.tagName ?? "") && !undoFromEditorSelect) ||
           event.repeat) return;
+      if (undoActionKey) {
+        event.preventDefault();
+        if (editableSet && reviewHistory.length > 0) undoReviewEdit();
+        else if (poseCollecting && posePoints.length > 0) undoDraftBox();
+        else if (!editableSet && !poseCollecting && draftBoxes.length > 0) undoDraftBox();
+        return;
+      }
       const undoKey = matchesShortcut(event, shortcuts, "undoDraft") || matchesShortcut(event, shortcuts, "undoDraftAlt");
       const deleteKey = matchesShortcut(event, shortcuts, "deleteBox") || matchesShortcut(event, shortcuts, "deleteBoxAlt");
       if (editableSet ? !deleteKey : !undoKey) return;
@@ -794,7 +815,8 @@ export function App() {
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [activeView, annotationSaveState, busy, deleteSelectedReviewBox, draftBoxes.length, editableSet,
-    poseCollecting, posePoints.length, poseProject, selectedReviewBoxIndex, shortcuts, undoDraftBox, workspaceSection]);
+    poseCollecting, posePoints.length, poseProject, reviewHistory.length, selectedReviewBoxIndex, shortcuts,
+    undoDraftBox, undoReviewEdit, workspaceSection]);
 
   useEffect(() => {
     if (!autoLabelResults) return;
@@ -2151,8 +2173,8 @@ export function App() {
               <button className="primary" onClick={saveManualAnnotation} disabled={draftBoxes.length === 0 || (poseCollecting && posePoints.length > 0) || busy || !!editableSet} title={`Save completed poses (${shortcuts.save || "unassigned"})`}>
                 <Save size={16} /> Save <kbd>{shortcuts.save || "—"}</kbd>
               </button>
-              <button onClick={undoDraftBox} disabled={(poseCollecting ? posePoints.length === 0 : draftBoxes.length === 0) || busy || !!editableSet} title={`${poseCollecting ? "Undo last point" : "Undo last unsaved pose"} (${shortcuts.undoDraft || "unassigned"})`}>
-                <Undo2 size={16} /> Undo
+              <button onClick={undoDraftBox} disabled={(poseCollecting ? posePoints.length === 0 : draftBoxes.length === 0) || busy || !!editableSet} title={`${poseCollecting ? "Undo last point" : "Undo last unsaved pose"} (${shortcuts.undoAction || shortcuts.undoDraft || "unassigned"})`}>
+                <Undo2 size={16} /> Undo <kbd>{shortcuts.undoAction || shortcuts.undoDraft || "—"}</kbd>
               </button>
               <button onClick={() => poseCollecting ? setPosePoints([]) : setDraftBoxes([])} disabled={(poseCollecting ? posePoints.length === 0 : draftBoxes.length === 0) || busy || !!editableSet} title="Clear draft labels">
                 <X size={16} /> Clear
@@ -2160,6 +2182,7 @@ export function App() {
             </div>}
             {poseCollecting && <div className="pose-sidebar-progress">
               <div><strong>Adding pose</strong><span>{posePoints.length}/17 · {POSE_KEYPOINT_NAMES[posePoints.length] ?? "done"}</span></div>
+              <small>Undo {shortcuts.undoAction || shortcuts.undoDraft || "—"} · Cancel {shortcuts.cancelEdit || "—"}</small>
               <button className={poseVisibilityMode === "visible" ? "active" : ""} onClick={() => setPoseVisibilityMode("visible")} type="button">Visible{shortcuts.poseVisible ? ` · ${shortcuts.poseVisible}` : ""}</button>
               <button className={poseVisibilityMode === "occluded" ? "active" : ""} onClick={() => setPoseVisibilityMode("occluded")} type="button">Occluded{shortcuts.poseOccluded ? ` · ${shortcuts.poseOccluded}` : ""}</button>
               <button className="outside-frame-action" onClick={skipPosePoint} type="button">Outside frame{shortcuts.poseOutside ? ` · ${shortcuts.poseOutside}` : ""}</button>
@@ -2262,7 +2285,7 @@ export function App() {
               </div>}
               <div className="review-editor-tools">
                 <button className="danger-button" onClick={deleteSelectedReviewBox} disabled={selectedReviewBoxIndex == null || busy} title={`Delete selected box (${shortcuts.deleteBox || "unassigned"})`}><Trash2 size={16} /> Delete box</button>
-                <button onClick={undoReviewEdit} disabled={reviewHistory.length === 0 || busy} title="Undo review edit"><Undo2 size={16} /> Undo</button>
+                <button onClick={undoReviewEdit} disabled={reviewHistory.length === 0 || busy} title={`Undo last edit (${shortcuts.undoAction || "unassigned"})`}><Undo2 size={16} /> Undo <kbd>{shortcuts.undoAction || "—"}</kbd></button>
                 <button onClick={resetReviewBoxes} disabled={busy} title="Restore labels before editing"><RefreshCw size={16} /> Reset</button>
               </div>
             </div>
