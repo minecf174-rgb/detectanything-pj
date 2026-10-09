@@ -86,8 +86,10 @@ class AnnotationService:
             .where(Image.project_id == project_id, Image.status != "ARCHIVED")
             .group_by(AnnotationSet.annotation_set_id)
             .order_by(AnnotationSet.image_id, AnnotationSet.revision.desc())
-        )
+        ).all()
         latest_by_image: dict[int, dict] = {}
+        latest_approved_by_image: dict[int, int] = {}
+        pending_set_ids: set[int] = set()
         for image_id, annotation_set_id, source_type, status, is_negative, _revision, box_count in rows:
             if image_id not in latest_by_image:
                 latest_by_image[image_id] = {
@@ -97,7 +99,27 @@ class AnnotationService:
                     "status": status,
                     "box_count": box_count,
                     "is_negative": is_negative,
+                    "class_ids": [],
                 }
+            if status == "APPROVED" and image_id not in latest_approved_by_image:
+                latest_approved_by_image[image_id] = annotation_set_id
+            elif status == "PENDING":
+                pending_set_ids.add(annotation_set_id)
+        active_set_ids = set(latest_approved_by_image.values()) | pending_set_ids
+        if active_set_ids:
+            set_image_ids = {annotation_set_id: image_id for image_id, annotation_set_id, *_ in rows
+                             if annotation_set_id in active_set_ids}
+            class_ids_by_image: dict[int, set[int]] = {}
+            active_ids = sorted(active_set_ids)
+            for offset in range(0, len(active_ids), 500):
+                for annotation_set_id, class_id in self.db.execute(
+                    select(Annotation.annotation_set_id, Annotation.class_id)
+                    .where(Annotation.annotation_set_id.in_(active_ids[offset:offset + 500]))
+                ):
+                    image_id = set_image_ids[annotation_set_id]
+                    class_ids_by_image.setdefault(image_id, set()).add(class_id)
+            for image_id, class_ids in class_ids_by_image.items():
+                latest_by_image[image_id]["class_ids"] = sorted(class_ids)
         return list(latest_by_image.values())
 
     def confirm_negative_image(self, image_id: int, current_user: User):

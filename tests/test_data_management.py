@@ -224,6 +224,7 @@ def test_unused_dataset_version_can_be_deleted():
         "status": "APPROVED",
         "box_count": 1,
         "is_negative": False,
+        "class_ids": [label_class["class_id"]],
     }]
     version = client.post(
         "/datasets/versions",
@@ -425,6 +426,42 @@ def test_verifying_negative_clears_pending_boxes_without_erasing_history():
     ]
     assert all(item["annotations"] for item in history.json() if item["annotation_set_id"] in pending_ids)
     assert history.json()[-1]["annotation_set_id"] == confirmed.json()["annotation_set_id"]
+
+
+def test_image_status_class_ids_include_active_multilabel_and_ignore_rejected_suggestions():
+    headers = _register("class-filter-status")
+    project_id = client.post("/projects", headers=headers, json={
+        "name": "Class filter", "task_type": "OBJECT_DETECTION",
+    }).json()["project_id"]
+    class_ids = [client.post("/classes", headers=headers, json={
+        "project_id": project_id, "name": name, "class_index": index, "color": "#16a34a",
+    }).json()["class_id"] for index, name in enumerate(("bottle", "cap"))]
+    image_id = client.post(f"/images/upload?project_id={project_id}", headers=headers,
+                           files={"file": ("items.png", _png_bytes(), "image/png")}).json()["image_id"]
+    approved = client.post(f"/annotations/images/{image_id}/annotation-sets", headers=headers,
+                           json={"annotations": [{"class_id": class_ids[0], "x_min": .1, "y_min": .1,
+                                                   "x_max": .5, "y_max": .5} ]})
+    assert approved.status_code == 200, approved.text
+    with SessionLocal() as db:
+        suggestion = AutoLabelRepository(db).create_model_suggestion(image_id=image_id, model_id=None,
+            boxes=[{"class_id": class_ids[1], "x_min": .5, "y_min": .5,
+                    "x_max": .9, "y_max": .9, "confidence": .8}])
+        suggestion_id = suggestion.annotation_set_id
+        db.commit()
+
+    url = f"/annotations/projects/{project_id}/image-statuses"
+    current = client.get(url, headers=headers).json()[0]
+    assert current["status"] == "PENDING"
+    assert current["class_ids"] == class_ids
+
+    rejected = client.post(f"/annotations/sets/{suggestion_id}/reject", headers=headers, json={})
+    assert rejected.status_code == 200, rejected.text
+    current = client.get(url, headers=headers).json()[0]
+    assert current["class_ids"] == [class_ids[0]]
+
+    negative = client.post(f"/annotations/images/{image_id}/confirm-negative", headers=headers)
+    assert negative.status_code == 200, negative.text
+    assert client.get(url, headers=headers).json()[0]["class_ids"] == []
 
 
 def test_class_name_and_color_can_be_updated_without_changing_index():

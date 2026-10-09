@@ -304,6 +304,7 @@ export function App() {
   const [selectedDatasetVersionId, setSelectedDatasetVersionId] = useState<number | null>(null);
   const [selectedImageId, setSelectedImageId] = useState<number | null>(null);
   const [selectedClassId, setSelectedClassId] = useState<number | null>(null);
+  const [classFilterId, setClassFilterId] = useState<number | null>(null);
   const [newProjectOpen, setNewProjectOpen] = useState(false);
   const [projectActionsOpen, setProjectActionsOpen] = useState(false);
   const [className, setClassName] = useState("object");
@@ -470,6 +471,25 @@ export function App() {
   const selectedImageIndex = selectedImageId
     ? images.findIndex((image) => image.image_id === selectedImageId) + 1
     : 0;
+  const classFilterImageIds = useMemo(() => new Set(
+    classFilterId == null ? [] : imageAnnotationStatuses
+      .filter((status) => status.class_ids.includes(classFilterId))
+      .map((status) => status.image_id)
+  ), [classFilterId, imageAnnotationStatuses]);
+  const classFilterName = classes.find((labelClass) => labelClass.class_id === classFilterId)?.name ?? null;
+  const classFilterCount = useMemo(() => images.filter((image) => classFilterImageIds.has(image.image_id)).length,
+    [images, classFilterImageIds]);
+
+  const adjacentAnnotationImage = (direction: -1 | 1) => {
+    if (images.length === 0) return null;
+    const currentIndex = selectedImageId == null
+      ? (direction === 1 ? -1 : images.length)
+      : images.findIndex((image) => image.image_id === selectedImageId);
+    for (let index = currentIndex + direction; index >= 0 && index < images.length; index += direction) {
+      if (classFilterId == null || classFilterImageIds.has(images[index].image_id)) return images[index];
+    }
+    return null;
+  };
 
   const selectAnnotationImage = async (imageId: number) => {
     if (imageId === selectedImageId) return true;
@@ -498,11 +518,7 @@ export function App() {
   };
 
   const navigateSelectedImage = (direction: -1 | 1) => {
-    if (images.length === 0) return;
-    const currentIndex = selectedImageId == null
-      ? (direction === 1 ? -1 : images.length)
-      : images.findIndex((image) => image.image_id === selectedImageId);
-    const nextImage = images[currentIndex + direction];
+    const nextImage = adjacentAnnotationImage(direction);
     if (nextImage) void selectAnnotationImage(nextImage.image_id);
   };
 
@@ -603,6 +619,7 @@ export function App() {
     setPoseEditVisibilityMode("visible");
     setSelectedImageId(null);
     setSelectedClassId(null);
+    setClassFilterId(null);
     setEditingClassId(null);
     setAnnotationImageId(null);
     setAutoLabelResults(null);
@@ -720,12 +737,16 @@ export function App() {
   useEffect(() => {
     if (classes.length === 0) {
       setSelectedClassId(null);
+      setClassFilterId(null);
       return;
     }
     if (!selectedClassId || !classes.some((labelClass) => labelClass.class_id === selectedClassId)) {
       setSelectedClassId(classes[0].class_id);
     }
-  }, [classes, selectedClassId]);
+    if (classFilterId != null && !classes.some((labelClass) => labelClass.class_id === classFilterId)) {
+      setClassFilterId(null);
+    }
+  }, [classes, selectedClassId, classFilterId]);
 
   useEffect(() => {
     setTrainingSettings((current) => ({
@@ -794,10 +815,14 @@ export function App() {
 
   const chooseLabelClass = (classId: number) => {
     setSelectedClassId(classId);
-    if (poseProject || editableSet || reviewActionOnCurrentImage || !pendingClassBox) return;
-    setDraftBoxes((current) => [...current, { ...pendingClassBox, class_id: classId }]);
-    setPendingClassBox(null);
-    setAnnotationSaveState("pending");
+    if (poseProject || editableSet || reviewActionOnCurrentImage) return;
+    if (pendingClassBox) {
+      setDraftBoxes((current) => [...current, { ...pendingClassBox, class_id: classId }]);
+      setPendingClassBox(null);
+      setAnnotationSaveState("pending");
+      return;
+    }
+    if (!drawingBox) setClassFilterId((current) => current === classId ? null : classId);
   };
 
   const rememberReviewBoxes = useCallback(() => {
@@ -1146,7 +1171,7 @@ export function App() {
       return;
     }
     const project = projects.find((item) => item.project_id === selectedProjectId);
-    if (!window.confirm(`Delete project "${project?.name ?? selectedProjectId}" and all data inside it?`)) return;
+    if (!window.confirm(`Permanently delete project "${project?.name ?? selectedProjectId}"? This removes its images, labels, datasets, WebP previews, trained/imported models, and saved training files. This cannot be undone.`)) return;
     void runAction("Delete project", async () => {
       await api.deleteProject(selectedProjectId);
       const nextProjects = await api.listProjects();
@@ -1212,6 +1237,7 @@ export function App() {
               status: "APPROVED",
               box_count: saved.annotations.length,
               is_negative: false,
+              class_ids: [...new Set(saved.annotations.map((box) => box.class_id))],
             },
           ]);
           if (selectedImageIdRef.current === imageId) {
@@ -1395,6 +1421,7 @@ export function App() {
         const labelClass = classIndex == null ? null : classes[classIndex];
         if (labelClass) {
           event.preventDefault();
+          if (event.repeat) return;
           chooseLabelClass(labelClass.class_id);
         }
       }
@@ -1915,6 +1942,7 @@ export function App() {
           status: "APPROVED",
           box_count: 0,
           is_negative: true,
+          class_ids: [],
         },
       ]);
     }, { refresh: false });
@@ -2027,6 +2055,10 @@ export function App() {
               status: "APPROVED",
               box_count: accepted.annotations.length,
               is_negative: accepted.is_negative,
+              class_ids: accepted.is_negative ? [] : [...new Set([
+                ...(current.find((item) => item.image_id === set.image_id)?.class_ids ?? []),
+                ...accepted.annotations.map((box) => box.class_id),
+              ])],
             },
           ]);
           if (selectedImageIdRef.current === set.image_id) {
@@ -2054,6 +2086,8 @@ export function App() {
       acceptQueue.current.delete(setId);
       setAcceptQueueRevision((current) => current + 1);
       const latest = sets[sets.length - 1];
+      const latestApprovedSet = [...sets].reverse().find((item) => item.status === "APPROVED");
+      const activeSets = [...(latestApprovedSet ? [latestApprovedSet] : []), ...sets.filter((item) => item.status === "PENDING")];
       setImageAnnotationStatuses((current) => [
         ...current.filter((item) => item.image_id !== failed.set.image_id),
         ...(latest ? [{
@@ -2063,6 +2097,7 @@ export function App() {
           status: latest.status as ImageAnnotationStatus["status"],
           box_count: latest.annotations.length,
           is_negative: latest.is_negative,
+          class_ids: [...new Set(activeSets.flatMap((item) => item.annotations.map((box) => box.class_id)))].sort((a, b) => a - b),
         }] : []),
       ]);
       if (selectedImageIdRef.current === failed.set.image_id) {
@@ -2268,10 +2303,10 @@ export function App() {
                 </div>
               </div>
             ) : (
-              <div className={labelClass.class_id === selectedClassId ? "list-row active" : "list-row"} key={labelClass.class_id}>
-                <button className="class-select" onClick={() => chooseLabelClass(labelClass.class_id)} title={!poseProject && classIndex < 9 ? `Shortcut ${shortcuts[`class${classIndex + 1}`] || "unassigned"}` : undefined}>
+              <div className={`list-row${labelClass.class_id === selectedClassId ? " active" : ""}${labelClass.class_id === classFilterId ? " filtered" : ""}`} key={labelClass.class_id}>
+                <button className="class-select" onClick={() => chooseLabelClass(labelClass.class_id)} aria-pressed={!poseProject && classFilterId === labelClass.class_id} title={!poseProject ? `Filter images by ${labelClass.name}; choose this class for a pending box${classIndex < 9 ? ` (${shortcuts[`class${classIndex + 1}`] || "unassigned"})` : ""}. Press again to clear the filter.` : undefined}>
                   <span className="swatch" style={{ background: labelClass.color }} />
-                  <span>{labelClass.class_index}: {labelClass.name}{!poseProject && classIndex < 9 && shortcuts[`class${classIndex + 1}`] ? ` · ${shortcuts[`class${classIndex + 1}`]}` : ""}</span>
+                  <span>{labelClass.class_index}: {labelClass.name}{!poseProject && classIndex < 9 && shortcuts[`class${classIndex + 1}`] ? ` · ${shortcuts[`class${classIndex + 1}`]}` : ""}{classFilterId === labelClass.class_id ? " · Filtering" : ""}</span>
                 </button>
                 <button className="mini-edit" onClick={() => startClassEdit(labelClass)} title="Edit class" type="button">
                   <Pencil size={14} />
@@ -2353,7 +2388,7 @@ export function App() {
         <section className="canvas-column">
           {selectedImage && (
             <nav className="annotation-image-navigation" aria-label="Navigate annotation images">
-              <button className="icon-button" onClick={() => navigateSelectedImage(-1)} disabled={busy || selectedImageIndex <= 1} title={`Previous image (${shortcuts.previousImage || "unassigned"})`} aria-label="Previous image" type="button"><ChevronLeft size={20} /></button>
+              <button className="icon-button" onClick={() => navigateSelectedImage(-1)} disabled={busy || !adjacentAnnotationImage(-1)} title={`Previous image (${shortcuts.previousImage || "unassigned"})`} aria-label="Previous image" type="button"><ChevronLeft size={20} /></button>
               <button className="annotation-image-position" onClick={() => setImageSelectorOpen(true)} disabled={busy} title="Open image selector" type="button">Image {selectedImageIndex} of {images.length}</button>
               {queuedImageCount > 0 && <span className="annotation-queue-indicator" role="status">Saving {queuedImageCount} image{queuedImageCount === 1 ? "" : "s"}…</span>}
               {queuedAcceptCount > 0 && <span className="annotation-queue-indicator" role="status">Accepting {queuedAcceptCount} image{queuedAcceptCount === 1 ? "" : "s"}…</span>}
@@ -2367,9 +2402,14 @@ export function App() {
               }}>Accept failed on {failedAcceptCount} image{failedAcceptCount === 1 ? "" : "s"} · Open</button>}
               <button className="annotation-copy-previous" onClick={() => void copyPreviousLabels()} disabled={busy || selectedImageIndex <= 1 || !!editableSet || poseCollecting || !!pendingClassBox || draftBoxes.length > 0 || reviewActionOnCurrentImage || visibleAnnotations.some((annotationSet) => annotationSet.status !== "REJECTED" && annotationSet.annotations.length > 0)} title={selectedImageIndex <= 1 ? "No previous image" : "Copy labels from the previous image as an editable draft"} type="button"><Copy size={17} /> Copy previous labels</button>
               {latestApproved && <button className="annotation-edit-action" onClick={startManualEditor} disabled={busy || !!editableSet || poseCollecting || drawingBox || !!pendingClassBox || draftBoxes.length > 0 || failedImageBoxes.length > 0 || annotationSaveState === "saving" || reviewActionOnCurrentImage} title={`Edit saved labels (${shortcuts.editSavedLabels || "unassigned"})`} type="button"><Settings2 size={16} /> Edit labels <kbd>{shortcuts.editSavedLabels || "—"}</kbd></button>}
-              <button className="icon-button" onClick={() => navigateSelectedImage(1)} disabled={busy || selectedImageIndex >= images.length} title={`Next image (${shortcuts.nextImage || "unassigned"})`} aria-label="Next image" type="button"><ChevronRight size={20} /></button>
+              <button className="icon-button" onClick={() => navigateSelectedImage(1)} disabled={busy || !adjacentAnnotationImage(1)} title={`Next image (${shortcuts.nextImage || "unassigned"})`} aria-label="Next image" type="button"><ChevronRight size={20} /></button>
             </nav>
           )}
+          {!poseProject && classFilterId != null && <div className="annotation-class-filter-bar" role="status">
+            <span className="swatch" style={{ background: classColorById[classFilterId] }} />
+            <span>Filter: <strong>{classFilterName}</strong> · {classFilterCount} image{classFilterCount === 1 ? "" : "s"}</span>
+            <button type="button" onClick={() => setClassFilterId(null)} aria-label="Clear class filter" title="Clear class filter">Clear <X size={14} /></button>
+          </div>}
           <AnnotationCanvas
             image={selectedImage}
             boxes={editableSet ? [] : latestApproved?.annotations ?? []}

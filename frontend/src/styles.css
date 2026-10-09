@@ -1070,6 +1070,37 @@ label {
 
 .annotation-image-navigation .annotation-image-position { flex: 1 1 auto; }
 
+.annotation-class-filter-bar {
+  align-items: center;
+  background: #e8f0ff;
+  border: 1px solid #aac4ff;
+  border-radius: 8px;
+  color: #2455a6;
+  display: flex;
+  gap: 9px;
+  min-height: 40px;
+  padding: 6px 10px;
+}
+
+.annotation-class-filter-bar .swatch {
+  border-radius: 50%;
+  flex: none;
+  height: 12px;
+  width: 12px;
+}
+
+.annotation-class-filter-bar button {
+  align-items: center;
+  background: #fff;
+  border: 1px solid #aac4ff;
+  color: #2455a6;
+  display: inline-flex;
+  gap: 4px;
+  margin-left: auto;
+  min-height: 28px;
+  padding: 3px 8px;
+}
+
 .annotation-queue-indicator {
   color: #526078;
   font-size: 12px;

@@ -115,6 +115,7 @@ export type ImageAnnotationStatus = {
   status: "PENDING" | "APPROVED" | "REJECTED";
   box_count: number;
   is_negative: boolean;
+  class_ids: number[];
 };
 
 export type DatasetVersion = {

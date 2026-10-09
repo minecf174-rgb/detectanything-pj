@@ -29,8 +29,8 @@ export const SHORTCUT_DEFINITIONS: ShortcutDefinition[] = [
   { id: "verifyCurrentNegative", group: "Negative verification", label: "Verify current image as negative", description: "Confirm the open image has no target objects; clears active boxes and rejects pending suggestions. Unsaved drafts must be finished first.", defaultKey: "V", contexts: idle },
   { id: "verifyNegative", group: "No-box review", label: "Verify negative", description: "Confirm the current image has no target objects in Select image → Review no-box.", defaultKey: "V", contexts: ["negative-review"] },
   ...Array.from({ length: 9 }, (_, index): ShortcutDefinition => ({
-    id: `class${index + 1}`, group: "Object Detection", label: `Select class ${index + 1}`,
-    description: `Select class in position ${index + 1} of the Classes list, if it exists.`,
+    id: `class${index + 1}`, group: "Object Detection", label: `Class ${index + 1} / filter`,
+    description: `Assign class ${index + 1} to a pending box; otherwise toggle the image filter for that class.`,
     defaultKey: String(index + 1), contexts: ["detect"],
   })),
   { id: "addPose", group: "Pose · Add", label: "Add pose", description: "Start placing a new 17-point person pose.", defaultKey: "A", contexts: ["pose"] },
