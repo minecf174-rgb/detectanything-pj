@@ -141,8 +141,17 @@ class AnnotationService:
     def accept_annotation_set(
         self, annotation_set_id: int, data: AnnotationReviewRequest, current_user: User
     ):
-        annotation_set = self._get_pending_model_annotation_set(annotation_set_id)
+        annotation_set = self.repository.get_set(annotation_set_id)
+        if annotation_set is None:
+            raise HTTPException(status_code=404, detail="Annotation set not found")
         self._require_annotation_set_owner(annotation_set, current_user)
+        if annotation_set.source_type != "MODEL":
+            raise HTTPException(status_code=400, detail="Only MODEL annotation sets can be reviewed")
+        # Retrying after a lost response must not turn a successful accept into a conflict.
+        if annotation_set.status == "APPROVED":
+            return annotation_set
+        if annotation_set.status != "PENDING":
+            raise HTTPException(status_code=409, detail=f"Annotation set is {annotation_set.status}")
         annotation_set.status = "APPROVED"
         annotation_set.reviewed_by = current_user.user_id
         annotation_set.reviewed_at = datetime.now(timezone.utc)

@@ -1389,6 +1389,11 @@ h2 {
   border-color: #2563eb;
 }
 
+.box.unclassified {
+  border-color: #64748b;
+  border-style: dashed;
+}
+
 .box.editable {
   border-style: dashed;
   cursor: move;
@@ -1476,6 +1481,20 @@ h2 {
   justify-content: space-between;
   padding: 8px 10px;
 }
+
+.annotation-unclassified-hint {
+  background: #f1f5f9;
+  border: 1px dashed #94a3b8;
+  border-radius: 8px;
+  color: #334155;
+  display: grid;
+  gap: 6px;
+  padding: 9px;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.annotation-unclassified-hint button { min-height: 30px; }
 
 .annotation-save-state span {
   color: #475569;

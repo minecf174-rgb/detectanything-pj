@@ -106,6 +106,14 @@ def test_pretrained_pose_job_and_outside_frame_keypoints_are_supported():
     assert accept_response.status_code == 200, accept_response.text
     assert accept_response.json() == {"accepted_count": 1, "skipped_count": 0}
 
+    repeat_accept = client.post(
+        f"/annotations/sets/{suggestion_id}/accept",
+        headers=headers,
+        json={},
+    )
+    assert repeat_accept.status_code == 200, repeat_accept.text
+    assert repeat_accept.json()["status"] == "APPROVED"
+
     negative_dataset_response = client.post(
         "/datasets/versions",
         headers=headers,
