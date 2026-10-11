@@ -238,12 +238,32 @@ function ProjectDashboard({
   busy,
   onOpenCreate,
   onOpen,
+  onDelete,
 }: {
   projects: Project[];
   busy: boolean;
   onOpenCreate: () => void;
   onOpen: (projectId: number) => void;
+  onDelete: (projectId: number) => void;
 }) {
+  const [menuProjectId, setMenuProjectId] = useState<number | null>(null);
+
+  useEffect(() => {
+    if (menuProjectId == null) return;
+    const closeOutside = (event: MouseEvent) => {
+      if (!(event.target instanceof Element) || !event.target.closest("[data-project-card-actions]")) setMenuProjectId(null);
+    };
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setMenuProjectId(null);
+    };
+    document.addEventListener("mousedown", closeOutside);
+    window.addEventListener("keydown", closeOnEscape);
+    return () => {
+      document.removeEventListener("mousedown", closeOutside);
+      window.removeEventListener("keydown", closeOnEscape);
+    };
+  }, [menuProjectId]);
+
   return (
     <main className="project-dashboard">
       <header className="dashboard-heading">
@@ -263,7 +283,7 @@ function ProjectDashboard({
       ) : (
         <section className="project-grid" aria-label="Projects">
           {[...projects].reverse().map((project) => (
-            <article className="project-card" key={project.project_id}>
+            <article className={`project-card${menuProjectId === project.project_id ? " menu-open" : ""}`} key={project.project_id}>
               <button className="project-card-main" onClick={() => onOpen(project.project_id)}>
                 <span className="project-icon"><ImageIcon size={20} /></span>
                 <span className="project-card-name">{project.name}</span>
@@ -271,6 +291,14 @@ function ProjectDashboard({
                 {project.description && <span className="project-description">{project.description}</span>}
                 <span className="project-date">Created {new Date(project.created_at).toLocaleDateString()}</span>
               </button>
+              <div className="project-card-actions" data-project-card-actions>
+                <button className="icon-button" type="button" title={`Actions for ${project.name}`} aria-label={`Actions for ${project.name}`} aria-expanded={menuProjectId === project.project_id} aria-haspopup="menu" onClick={() => setMenuProjectId((current) => current === project.project_id ? null : project.project_id)}>
+                  <MoreHorizontal size={19} />
+                </button>
+                {menuProjectId === project.project_id && <div className="project-actions-menu" role="menu">
+                  <button className="danger-item" type="button" role="menuitem" disabled={busy} onClick={() => { setMenuProjectId(null); onDelete(project.project_id); }}><Trash2 size={15} /> Delete project</button>
+                </div>}
+              </div>
             </article>
           ))}
         </section>
@@ -306,7 +334,6 @@ export function App() {
   const [selectedClassId, setSelectedClassId] = useState<number | null>(null);
   const [classFilterId, setClassFilterId] = useState<number | null>(null);
   const [newProjectOpen, setNewProjectOpen] = useState(false);
-  const [projectActionsOpen, setProjectActionsOpen] = useState(false);
   const [className, setClassName] = useState("object");
   const [classColor, setClassColor] = useState("#16a34a");
   const [editingClassId, setEditingClassId] = useState<number | null>(null);
@@ -375,7 +402,6 @@ export function App() {
   const selectedProjectIdRef = useRef<number | null>(null);
   const reviewShortcutInFlight = useRef(false);
   const projectRequestId = useRef(0);
-  const projectActionsRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => { setShortcuts(loadShortcuts(session?.user.user_id)); }, [session?.user.user_id]);
 
@@ -430,22 +456,6 @@ export function App() {
     () => pendingImageAnnotationStatuses.map((status) => status.annotation_set_id),
     [pendingImageAnnotationStatuses],
   );
-
-  useEffect(() => {
-    if (!projectActionsOpen) return;
-    const closeOutside = (event: MouseEvent) => {
-      if (!projectActionsRef.current?.contains(event.target as Node)) setProjectActionsOpen(false);
-    };
-    const closeOnEscape = (event: KeyboardEvent) => {
-      if (event.key === "Escape") setProjectActionsOpen(false);
-    };
-    document.addEventListener("mousedown", closeOutside);
-    window.addEventListener("keydown", closeOnEscape);
-    return () => {
-      document.removeEventListener("mousedown", closeOutside);
-      window.removeEventListener("keydown", closeOnEscape);
-    };
-  }, [projectActionsOpen]);
 
   useEffect(() => {
     if (modelActionsOpenId == null) return;
@@ -936,7 +946,6 @@ export function App() {
       return;
     }
     clearProjectState();
-    setProjectActionsOpen(false);
     setSelectedProjectId(projectId);
     await refreshProject(projectId);
     setActiveView("workspace");
@@ -1164,20 +1173,21 @@ export function App() {
     void runAction("Delete class", () => api.deleteClass(labelClass.class_id));
   };
 
-  const deleteSelectedProject = () => {
-    if (!selectedProjectId) return;
-    if (draftBoxes.length > 0 || queuedImageCount > 0 || failedImageCount > 0 || queuedAcceptCount > 0 || failedAcceptCount > 0) {
+  const deleteProject = (projectId: number) => {
+    if (projectId === selectedProjectId && (draftBoxes.length > 0 || queuedImageCount > 0 || failedImageCount > 0 || queuedAcceptCount > 0 || failedAcceptCount > 0)) {
       setStatus("Save or retry all annotation actions before deleting this project");
       return;
     }
-    const project = projects.find((item) => item.project_id === selectedProjectId);
-    if (!window.confirm(`Permanently delete project "${project?.name ?? selectedProjectId}"? This removes its images, labels, datasets, WebP previews, trained/imported models, and saved training files. This cannot be undone.`)) return;
+    const project = projects.find((item) => item.project_id === projectId);
+    if (!window.confirm(`Permanently delete project "${project?.name ?? projectId}"? This removes its images, labels, datasets, WebP previews, trained/imported models, and saved training files. This cannot be undone.`)) return;
     void runAction("Delete project", async () => {
-      await api.deleteProject(selectedProjectId);
+      await api.deleteProject(projectId);
       const nextProjects = await api.listProjects();
       setProjects(nextProjects);
-      setSelectedProjectId(nextProjects[0]?.project_id ?? null);
-      clearProjectState();
+      if (projectId === selectedProjectId) {
+        setSelectedProjectId(nextProjects[0]?.project_id ?? null);
+        clearProjectState();
+      }
       setActiveView("dashboard");
     }, { refresh: false });
   };
@@ -2156,7 +2166,7 @@ export function App() {
   return (
     <div className="app-shell">
       <header className="topbar global-header">
-        <button className="brand-home platform-brand" onClick={() => { setProjectActionsOpen(false); setActiveView("dashboard"); }} disabled={busy} title="Back to project dashboard">
+        <button className="brand-home platform-brand" onClick={() => setActiveView("dashboard")} disabled={busy} title="Back to project dashboard">
           <span className="brand-mark"><CircleDot size={19} /></span>
           <span className="brand-copy"><strong>CV Platform</strong><small>{status}</small></span>
         </button>
@@ -2174,35 +2184,9 @@ export function App() {
           busy={busy}
           onOpenCreate={() => setNewProjectOpen(true)}
           onOpen={openProject}
+          onDelete={deleteProject}
         />
       ) : <div className="workspace-page">
-        <section className="project-context">
-          <div className="project-context-main">
-            <button className="back-button" onClick={() => { setProjectActionsOpen(false); setActiveView("dashboard"); }} disabled={busy} type="button">
-              <ArrowLeft size={17} /> Projects
-            </button>
-            <div className="project-heading">
-              <span>Projects / {selectedProject?.name ?? "Project"}</span>
-              <div>
-                <h1>{selectedProject?.name ?? "Project"}</h1>
-                <span className="task-pill">{selectedProjectTask.replace(/_/g, " ")}</span>
-              </div>
-            </div>
-          </div>
-          <div className="project-context-actions" ref={projectActionsRef}>
-            <button className="icon-button" onClick={() => setProjectActionsOpen((current) => !current)} aria-expanded={projectActionsOpen} title="Project actions" type="button">
-              <MoreHorizontal size={19} />
-            </button>
-            {projectActionsOpen && (
-              <div className="project-actions-menu">
-                <button className="danger-item" onClick={() => { setProjectActionsOpen(false); void deleteSelectedProject(); }} disabled={!selectedProjectId || busy} type="button">
-                  <Trash2 size={15} /> Delete project
-                </button>
-              </div>
-            )}
-          </div>
-        </section>
-
         <div className="workspace-layout">
           <aside className="workspace-sidebar">
             <nav aria-label="Project sections">
@@ -3932,9 +3916,8 @@ function ImageSelectorPreview({
     return () => observer.disconnect();
   }, [thumbnail, nearViewport, scrollRoot]);
   const imageUrl = useProtectedImageUrl(thumbnail && !nearViewport ? null : image, thumbnail ? "thumbnail" : "original");
-  const [imageReady, setImageReady] = useState(false);
   const [containerSize, setContainerSize] = useState({ width: 0, height: 0 });
-  const [loadedImageSize, setLoadedImageSize] = useState({ width: 0, height: 0 });
+  const [loadedImage, setLoadedImage] = useState<{ url: string; width: number; height: number } | null>(null);
 
   useEffect(() => {
     if (frame) return;
@@ -3947,14 +3930,10 @@ function ImageSelectorPreview({
     return () => observer.disconnect();
   }, [frame]);
 
-  useEffect(() => {
-    setImageReady(false);
-    setLoadedImageSize({ width: 0, height: 0 });
-  }, [imageUrl, image.image_id]);
-
+  const imageReady = imageUrl != null && loadedImage?.url === imageUrl;
   const visibleFrame = frame ?? (containerSize.width > 0 && containerSize.height > 0 &&
-    loadedImageSize.width > 0 && loadedImageSize.height > 0
-    ? getImageFrameForDimensions(loadedImageSize.width, loadedImageSize.height, containerSize.width / containerSize.height)
+    imageReady && loadedImage.width > 0 && loadedImage.height > 0
+    ? getImageFrameForDimensions(loadedImage.width, loadedImage.height, containerSize.width / containerSize.height)
     : null);
 
   const tone = preview?.status === "PENDING"
@@ -3965,9 +3944,8 @@ function ImageSelectorPreview({
 
   return <div ref={containerRef} className={showTags ? "image-selector-preview show-tags" : "image-selector-preview"}>
     {imageUrl
-      ? <img className={imageReady ? undefined : "image-hidden"} src={imageUrl} alt={alt} loading="lazy" onLoad={(event) => {
-        setLoadedImageSize({ width: event.currentTarget.naturalWidth, height: event.currentTarget.naturalHeight });
-        setImageReady(true);
+      ? <img src={imageUrl} alt={alt} loading="lazy" onLoad={(event) => {
+        setLoadedImage({ url: imageUrl, width: event.currentTarget.naturalWidth, height: event.currentTarget.naturalHeight });
       }} />
       : <span className="protected-image-placeholder">Loading image...</span>}
     {imageReady && visibleFrame && preview?.annotations.map((box, index) => <span key={index}>
