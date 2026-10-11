@@ -3230,7 +3230,6 @@ function ImageSelectorModal({
                 ? `Accepted · ${annotationStatus?.box_count ?? 0}`
                 : `Pending · ${annotationStatus?.box_count ?? 0}`;
           const statusClass = annotationStatus?.is_negative ? "negative" : displayStatus === "REJECTED" ? "rejected" : hasLabels ? displayStatus.toLowerCase() : "needs-drawing";
-          const frame = getImageFrameForDimensions(image.width ?? 1, image.height ?? 1, 240 / 150);
           const tagNames = [...new Set(preview?.annotations.map((box) => classNames[box.class_id] ?? `Class ${box.class_id}`) ?? [])];
           const selected = image.image_id === selectedImageId;
           const bulkSelected = selectedPendingImageIds.has(image.image_id);
@@ -3247,7 +3246,7 @@ function ImageSelectorModal({
             {!selectingMultiple && selected && <span className="image-card-selected"><Check size={14} /> Current image</span>}
             {selectingMultiple && bulkSelected && <span className="image-card-selected"><Check size={14} /> Selected</span>}
             <span className={`image-card-label-state ${hasLabels ? "labeled" : "drawing"}`}>{annotationStatus?.is_negative ? "Negative" : hasLabels ? "Labeled" : "Needs drawing"}</span>
-            <ImageSelectorPreview image={image} alt={image.original_filename ?? `Image ${globalIndex}`} preview={preview} frame={frame} classColors={classColors} classNames={classNames} showTags thumbnail scrollRoot={gridRef} />
+            <ImageSelectorPreview image={image} alt={image.original_filename ?? `Image ${globalIndex}`} preview={preview} classColors={classColors} classNames={classNames} showTags thumbnail scrollRoot={gridRef} />
             <div><strong>#{globalIndex} {image.original_filename ?? `image-${globalIndex}`}</strong><span className={statusClass}>{pendingImageIds.has(image.image_id) && hasLabels ? `Pending · ${annotationStatus?.box_count ?? 0}` : statusText}</span>{tagNames.length > 0 && <small className="image-selector-card-tags" title={tagNames.join(", ")}>Tags: {tagNames.join(", ")}</small>}</div>
           </button>;
         })}
@@ -3906,7 +3905,7 @@ function ImageSelectorPreview({
   image: ImageItem;
   alt: string;
   preview: AnnotationSet | null | undefined;
-  frame: ImageFrame;
+  frame?: ImageFrame;
   classColors: Record<number, string>;
   classNames?: Record<number, string>;
   showTags?: boolean;
@@ -3934,8 +3933,29 @@ function ImageSelectorPreview({
   }, [thumbnail, nearViewport, scrollRoot]);
   const imageUrl = useProtectedImageUrl(thumbnail && !nearViewport ? null : image, thumbnail ? "thumbnail" : "original");
   const [imageReady, setImageReady] = useState(false);
+  const [containerSize, setContainerSize] = useState({ width: 0, height: 0 });
+  const [loadedImageSize, setLoadedImageSize] = useState({ width: 0, height: 0 });
 
-  useEffect(() => setImageReady(false), [imageUrl, image.image_id]);
+  useEffect(() => {
+    if (frame) return;
+    const container = containerRef.current;
+    if (!container) return;
+    const updateSize = () => setContainerSize({ width: container.clientWidth, height: container.clientHeight });
+    updateSize();
+    const observer = new ResizeObserver(updateSize);
+    observer.observe(container);
+    return () => observer.disconnect();
+  }, [frame]);
+
+  useEffect(() => {
+    setImageReady(false);
+    setLoadedImageSize({ width: 0, height: 0 });
+  }, [imageUrl, image.image_id]);
+
+  const visibleFrame = frame ?? (containerSize.width > 0 && containerSize.height > 0 &&
+    loadedImageSize.width > 0 && loadedImageSize.height > 0
+    ? getImageFrameForDimensions(loadedImageSize.width, loadedImageSize.height, containerSize.width / containerSize.height)
+    : null);
 
   const tone = preview?.status === "PENDING"
     ? "suggestion"
@@ -3945,11 +3965,14 @@ function ImageSelectorPreview({
 
   return <div ref={containerRef} className={showTags ? "image-selector-preview show-tags" : "image-selector-preview"}>
     {imageUrl
-      ? <img className={imageReady ? undefined : "image-hidden"} src={imageUrl} alt={alt} loading="lazy" onLoad={() => setImageReady(true)} />
+      ? <img className={imageReady ? undefined : "image-hidden"} src={imageUrl} alt={alt} loading="lazy" onLoad={(event) => {
+        setLoadedImageSize({ width: event.currentTarget.naturalWidth, height: event.currentTarget.naturalHeight });
+        setImageReady(true);
+      }} />
       : <span className="protected-image-placeholder">Loading image...</span>}
-    {imageReady && preview?.annotations.map((box, index) => <span key={index}>
-      <Box box={box} frame={frame} tone={tone} color={classColors[box.class_id]} label={showTags ? classNames?.[box.class_id] : undefined} />
-      <PoseKeypoints keypoints={box.keypoints ?? []} frame={frame} tone={tone} />
+    {imageReady && visibleFrame && preview?.annotations.map((box, index) => <span key={index}>
+      <Box box={box} frame={visibleFrame} tone={tone} color={classColors[box.class_id]} label={showTags ? classNames?.[box.class_id] : undefined} />
+      <PoseKeypoints keypoints={box.keypoints ?? []} frame={visibleFrame} tone={tone} />
     </span>)}
   </div>;
 }
@@ -4908,26 +4931,11 @@ function AutoLabelResultPreview({
   classColors: Record<number, string>;
   scrollRoot: { current: HTMLDivElement | null };
 }) {
-  const containerRef = useRef<HTMLDivElement | null>(null);
-  const [aspectRatio, setAspectRatio] = useState(4 / 3);
-
-  useEffect(() => {
-    const container = containerRef.current;
-    if (!container) return;
-    const observer = new ResizeObserver(([entry]) => {
-      if (entry.contentRect.height > 0) setAspectRatio(entry.contentRect.width / entry.contentRect.height);
-    });
-    observer.observe(container);
-    return () => observer.disconnect();
-  }, []);
-
-  const frame = getImageFrameForDimensions(result.image.width ?? 1, result.image.height ?? 1, aspectRatio);
-  return <div className="result-preview-content" ref={containerRef}>
+  return <div className="result-preview-content">
     <ImageSelectorPreview
       image={result.image}
       alt={result.image.original_filename ?? `Image ${result.image.image_id}`}
       preview={result.annotationSet}
-      frame={frame}
       classColors={classColors}
       thumbnail
       scrollRoot={scrollRoot}
