@@ -333,6 +333,7 @@ export function App() {
   const [selectedImageId, setSelectedImageId] = useState<number | null>(null);
   const [selectedClassId, setSelectedClassId] = useState<number | null>(null);
   const [classFilterId, setClassFilterId] = useState<number | null>(null);
+  const [negativeNavigationOnly, setNegativeNavigationOnly] = useState(false);
   const [newProjectOpen, setNewProjectOpen] = useState(false);
   const [className, setClassName] = useState("object");
   const [classColor, setClassColor] = useState("#16a34a");
@@ -489,6 +490,9 @@ export function App() {
   const classFilterName = classes.find((labelClass) => labelClass.class_id === classFilterId)?.name ?? null;
   const classFilterCount = useMemo(() => images.filter((image) => classFilterImageIds.has(image.image_id)).length,
     [images, classFilterImageIds]);
+  const negativeImageIds = useMemo(() => new Set(imageAnnotationStatuses
+    .filter((item) => item.is_negative)
+    .map((item) => item.image_id)), [imageAnnotationStatuses]);
 
   const adjacentAnnotationImage = (direction: -1 | 1) => {
     if (images.length === 0) return null;
@@ -496,6 +500,7 @@ export function App() {
       ? (direction === 1 ? -1 : images.length)
       : images.findIndex((image) => image.image_id === selectedImageId);
     for (let index = currentIndex + direction; index >= 0 && index < images.length; index += direction) {
+      if (negativeNavigationOnly && !negativeImageIds.has(images[index].image_id)) continue;
       if (classFilterId == null || classFilterImageIds.has(images[index].image_id)) return images[index];
     }
     return null;
@@ -630,6 +635,7 @@ export function App() {
     setSelectedImageId(null);
     setSelectedClassId(null);
     setClassFilterId(null);
+    setNegativeNavigationOnly(false);
     setEditingClassId(null);
     setAnnotationImageId(null);
     setAutoLabelResults(null);
@@ -832,7 +838,10 @@ export function App() {
       setAnnotationSaveState("pending");
       return;
     }
-    if (!drawingBox) setClassFilterId((current) => current === classId ? null : classId);
+    if (!drawingBox) {
+      setNegativeNavigationOnly(false);
+      setClassFilterId((current) => current === classId ? null : classId);
+    }
   };
 
   const rememberReviewBoxes = useCallback(() => {
@@ -864,6 +873,46 @@ export function App() {
     });
     setSelectedPoseKeypointIndex(0);
   }, [rememberReviewBoxes, selectedReviewBoxIndex]);
+
+  const deleteBoxByContextMenu = (source: "editable" | "draft" | "suggestion" | "approved", index: number) => {
+    if (poseProject || busy || imageSwitching || annotationImageId !== selectedImageId || reviewActionOnCurrentImage) return;
+    if (source === "editable") {
+      rememberReviewBoxes();
+      setReviewBoxes((current) => current.filter((_, itemIndex) => itemIndex !== index));
+      setSelectedReviewBoxIndex(reviewBoxes.length > 1 ? Math.min(index, reviewBoxes.length - 2) : null);
+      return;
+    }
+    if (editableSet || pendingClassBox || drawingBox) return;
+    if (source === "draft") {
+      const localIndex = index - failedImageBoxes.length - queuedImageBoxes.length;
+      if (localIndex < 0) {
+        setStatus("This box is already queued or failed to save; wait or retry before deleting it");
+        return;
+      }
+      removeDraftBox(localIndex);
+      return;
+    }
+    if (draftBoxes.length > 0 || failedImageBoxes.length > 0 || queuedImageBoxes.length > 0 || annotationSaveState === "saving") {
+      setStatus("Finish saving the current labels before deleting a saved box");
+      return;
+    }
+    let suggestionOffset = 0;
+    const sourceSet = source === "suggestion"
+      ? pendingSuggestions.find((set) => {
+        if (index < suggestionOffset + set.annotations.length) return true;
+        suggestionOffset += set.annotations.length;
+        return false;
+      })
+      : latestApproved;
+    if (!sourceSet) return;
+    const boxIndex = source === "suggestion" ? index - suggestionOffset : index;
+    const remaining = sourceSet.annotations.filter((_, itemIndex) => itemIndex !== boxIndex)
+      .map((box) => ({ ...toReviewBox(box), confidence: null }));
+    void runAction("Delete box", async () => {
+      if (source === "suggestion") await api.correctAnnotation(sourceSet.annotation_set_id, { annotations: remaining });
+      else await api.editAnnotation(sourceSet.annotation_set_id, { annotations: remaining });
+    });
+  };
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -2301,6 +2350,10 @@ export function App() {
               </div>
             ))}
           </div>
+          {!poseProject && <button className={`annotation-negative-filter${negativeNavigationOnly ? " active" : ""}`} type="button" aria-pressed={negativeNavigationOnly} onClick={() => {
+            setClassFilterId(null);
+            setNegativeNavigationOnly((current) => !current);
+          }} title="Use the arrows to browse only verified-negative images"><CircleDot size={16} /> <span>Verified negative · {negativeImageIds.size}{negativeNavigationOnly ? " · Filtering" : ""}</span></button>}
           <div className="annotation-sidebar-tools">
             <SectionTitle title="Annotation" />
             <div className="annotation-image-field">
@@ -2372,8 +2425,12 @@ export function App() {
         <section className="canvas-column">
           {selectedImage && (
             <nav className="annotation-image-navigation" aria-label="Navigate annotation images">
-              <button className="icon-button" onClick={() => navigateSelectedImage(-1)} disabled={busy || !adjacentAnnotationImage(-1)} title={`Previous image (${shortcuts.previousImage || "unassigned"})`} aria-label="Previous image" type="button"><ChevronLeft size={20} /></button>
-              <button className="annotation-image-position" onClick={() => setImageSelectorOpen(true)} disabled={busy} title="Open image selector" type="button">Image {selectedImageIndex} of {images.length}</button>
+              <div className="annotation-navigation-primary">
+                <button className="icon-button" onClick={() => navigateSelectedImage(-1)} disabled={busy || !adjacentAnnotationImage(-1)} title={`Previous image (${shortcuts.previousImage || "unassigned"})`} aria-label="Previous image" type="button"><ChevronLeft size={20} /></button>
+                <button className="annotation-image-position" onClick={() => setImageSelectorOpen(true)} disabled={busy} title="Open image selector" type="button">Image {selectedImageIndex} of {images.length}</button>
+                <button className="icon-button" onClick={() => navigateSelectedImage(1)} disabled={busy || !adjacentAnnotationImage(1)} title={`Next image (${shortcuts.nextImage || "unassigned"})`} aria-label="Next image" type="button"><ChevronRight size={20} /></button>
+              </div>
+              <div className="annotation-navigation-actions">
               {queuedImageCount > 0 && <span className="annotation-queue-indicator" role="status">Saving {queuedImageCount} image{queuedImageCount === 1 ? "" : "s"}…</span>}
               {queuedAcceptCount > 0 && <span className="annotation-queue-indicator" role="status">Accepting {queuedAcceptCount} image{queuedAcceptCount === 1 ? "" : "s"}…</span>}
               {failedImageCount > 0 && <button className="annotation-queue-error" type="button" onClick={() => {
@@ -2386,7 +2443,7 @@ export function App() {
               }}>Accept failed on {failedAcceptCount} image{failedAcceptCount === 1 ? "" : "s"} · Open</button>}
               <button className="annotation-copy-previous" onClick={() => void copyPreviousLabels()} disabled={busy || selectedImageIndex <= 1 || !!editableSet || poseCollecting || !!pendingClassBox || draftBoxes.length > 0 || reviewActionOnCurrentImage || visibleAnnotations.some((annotationSet) => annotationSet.status !== "REJECTED" && annotationSet.annotations.length > 0)} title={selectedImageIndex <= 1 ? "No previous image" : "Copy labels from the previous image as an editable draft"} type="button"><Copy size={17} /> Copy previous labels</button>
               {latestApproved && <button className="annotation-edit-action" onClick={startManualEditor} disabled={busy || !!editableSet || poseCollecting || drawingBox || !!pendingClassBox || draftBoxes.length > 0 || failedImageBoxes.length > 0 || annotationSaveState === "saving" || reviewActionOnCurrentImage} title={`Edit saved labels (${shortcuts.editSavedLabels || "unassigned"})`} type="button"><Settings2 size={16} /> Edit labels <kbd>{shortcuts.editSavedLabels || "—"}</kbd></button>}
-              <button className="icon-button" onClick={() => navigateSelectedImage(1)} disabled={busy || !adjacentAnnotationImage(1)} title={`Next image (${shortcuts.nextImage || "unassigned"})`} aria-label="Next image" type="button"><ChevronRight size={20} /></button>
+              </div>
             </nav>
           )}
           {!poseProject && classFilterId != null && <div className="annotation-class-filter-bar" role="status">
@@ -2418,6 +2475,7 @@ export function App() {
             onEditableSelect={setSelectedReviewBoxIndex}
             onEditableChange={updateReviewBox}
             onEditableEditStart={rememberReviewBoxes}
+            onDeleteBox={deleteBoxByContextMenu}
             onImportData={(files) => importData(files, true)}
             poseCollecting={poseCollecting}
             posePoints={posePoints}
@@ -2731,7 +2789,7 @@ export function App() {
           busy={busy}
           shortcuts={shortcuts}
           initialView={imageSelectorInitialView}
-          onSelect={(imageId) => { void selectAnnotationImage(imageId).then((selected) => { if (selected) { setImageSelectorOpen(false); setImageSelectorInitialView("browse"); } }); }}
+          onSelect={(imageId, negativeOnly) => { void selectAnnotationImage(imageId).then((selected) => { if (selected) { setNegativeNavigationOnly(negativeOnly); if (negativeOnly) setClassFilterId(null); setImageSelectorOpen(false); setImageSelectorInitialView("browse"); } }); }}
           onConfirmNegative={confirmNegative}
           onDrawNegative={(imageId) => { void selectAnnotationImage(imageId).then((selected) => { if (selected) { setImageSelectorOpen(false); setImageSelectorInitialView("browse"); } }); }}
           onReviewSelected={reviewSelectedProjectSuggestions}
@@ -2958,7 +3016,7 @@ function ImageSelectorModal({
   busy: boolean;
   shortcuts: ShortcutBindings;
   initialView: "browse" | "negative";
-  onSelect: (imageId: number) => void;
+  onSelect: (imageId: number, negativeOnly: boolean) => void;
   onConfirmNegative: (imageId: number) => void;
   onDrawNegative: (imageId: number) => void;
   onReviewSelected: (imageIds: number[], mode: "accept" | "reject") => void;
@@ -3223,7 +3281,7 @@ function ImageSelectorModal({
             className={`image-selector-card ${!selectingMultiple && selected ? "active" : ""} ${bulkSelected ? "bulk-selected" : ""} ${selectingMultiple && !selectable ? "bulk-disabled" : ""} ${hasLabels ? "has-labels" : "needs-drawing"}`}
             aria-pressed={selectingMultiple ? bulkSelected : selected}
             aria-disabled={selectingMultiple && !selectable}
-            onClick={() => selectingMultiple ? togglePendingImage(image.image_id) : onSelect(image.image_id)}
+            onClick={() => selectingMultiple ? togglePendingImage(image.image_id) : onSelect(image.image_id, filter === "negative")}
             key={image.image_id}
             type="button"
           >
@@ -4939,6 +4997,7 @@ function AnnotationCanvas({
   onEditableSelect,
   onEditableChange,
   onEditableEditStart,
+  onDeleteBox,
   onImportData,
   poseCollecting,
   posePoints,
@@ -4965,6 +5024,7 @@ function AnnotationCanvas({
   onEditableSelect: (index: number | null) => void;
   onEditableChange: (index: number, box: ReviewBox) => void;
   onEditableEditStart: () => void;
+  onDeleteBox: (source: "editable" | "draft" | "suggestion" | "approved", index: number) => void;
   onImportData: (files: FileList | null) => void;
   poseCollecting: boolean;
   posePoints: PosePoint[];
@@ -5008,7 +5068,7 @@ function AnnotationCanvas({
     return { ...normalizeBoxGeometry(start, current), class_id: requireClassAfterDraw ? -1 : classId! };
   }, [classId, current, requireClassAfterDraw, start]);
 
-  const point = (event: PointerEvent) => {
+  const point = (event: { clientX: number; clientY: number }) => {
     const rect = ref.current?.getBoundingClientRect();
     if (!rect) return { x: 0, y: 0 };
     const display = imageFrameToPixels(imageFrame, rect.width, rect.height);
@@ -5070,6 +5130,7 @@ function AnnotationCanvas({
         if (!busy) onImportData(event.dataTransfer.files);
       }}
       onPointerDown={(event) => {
+        if (event.button !== 0) return;
         if (busy || !imageReady) {
           if (!busy && !image) fileInputRef.current?.click();
           return;
@@ -5082,6 +5143,7 @@ function AnnotationCanvas({
       }}
       onPointerMove={(event) => start && setCurrent(point(event))}
       onPointerUp={(event) => {
+        if (event.button !== 0) return;
         if (busy) {
           setStart(null);
           setCurrent(null);
@@ -5113,6 +5175,25 @@ function AnnotationCanvas({
         onDrawingChange(false);
       }}
       onPointerCancel={() => { setStart(null); setCurrent(null); onDrawingChange(false); }}
+      onContextMenu={(event) => {
+        if (busy || !imageReady || poseCollecting || poseEditing) return;
+        const clicked = point(event);
+        const candidates = (editableBoxes.length > 0
+          ? editableBoxes.map((box, index) => ({ box, index, source: "editable" as const }))
+          : [
+              ...draftBoxes.map((box, index) => ({ box, index, source: "draft" as const })),
+              ...suggestions.map((box, index) => ({ box, index, source: "suggestion" as const })),
+              ...boxes.map((box, index) => ({ box, index, source: "approved" as const })),
+            ])
+          .filter(({ box }) => clicked.x >= box.x_min && clicked.x <= box.x_max && clicked.y >= box.y_min && clicked.y <= box.y_max)
+          .sort((left, right) =>
+            (left.box.x_max - left.box.x_min) * (left.box.y_max - left.box.y_min)
+            - (right.box.x_max - right.box.x_min) * (right.box.y_max - right.box.y_min));
+        const target = candidates[0];
+        if (!target) return;
+        event.preventDefault();
+        onDeleteBox(target.source, target.index);
+      }}
     >
       <input
         ref={fileInputRef}
@@ -5169,7 +5250,7 @@ function AnnotationCanvas({
           color={classColors[box.class_id]}
           label={classNames[box.class_id]}
           selected={selectedEditableIndex === index}
-          onPointerDown={(event, mode) => startEditableDrag(event, index, mode)}
+          onPointerDown={(event, mode) => { if (event.button === 0) startEditableDrag(event, index, mode); }}
           onPointerMove={moveEditableBox}
           onPointerUp={stopEditableDrag}
         />

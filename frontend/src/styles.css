@@ -1068,20 +1068,56 @@ label {
   align-self: start;
   display: grid;
   gap: 12px;
+  max-width: 100%;
   min-width: 0;
 }
 
 .annotation-image-navigation {
-  align-items: center;
   background: #ffffff;
   border: 1px solid #d2dae5;
   border-radius: 8px;
-  display: flex;
-  gap: 10px;
+  display: grid;
+  gap: 8px;
+  min-width: 0;
   padding: 8px;
 }
 
-.annotation-image-navigation .annotation-image-position { flex: 1 1 auto; }
+.annotation-navigation-primary {
+  align-items: center;
+  display: grid;
+  gap: 8px;
+  grid-template-columns: 40px minmax(0, 1fr) 40px;
+  min-width: 0;
+}
+
+.annotation-navigation-actions {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  min-width: 0;
+}
+
+.annotation-negative-filter {
+  align-items: center;
+  display: inline-flex;
+  gap: 6px;
+  justify-content: flex-start;
+  min-width: 0;
+  width: 100%;
+}
+
+.annotation-negative-filter span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.annotation-negative-filter.active {
+  background: #e8f0ff;
+  border-color: #9bbaff;
+  color: #1c5fd4;
+}
 
 .annotation-class-filter-bar {
   align-items: center;
@@ -1164,17 +1200,8 @@ label {
 }
 
 @media (max-width: 700px) {
-  .annotation-image-navigation {
-    display: grid;
-    grid-template-columns: 40px minmax(0, 1fr) 40px;
-  }
-
-  .annotation-image-navigation .annotation-image-position { grid-column: 2; grid-row: 1; min-width: 0; }
-  .annotation-image-navigation .icon-button:last-child { grid-column: 3; grid-row: 1; }
-  .annotation-copy-previous,
-  .annotation-edit-action { grid-column: 1 / -1; justify-content: center; }
-  .annotation-queue-indicator,
-  .annotation-queue-error { grid-column: 1 / -1; justify-content: center; }
+  .annotation-navigation-actions > button { flex: 1 1 100%; justify-content: center; }
+  .annotation-queue-indicator { width: 100%; text-align: center; }
 }
 
 h2 {
@@ -1269,6 +1296,7 @@ h2 {
   align-self: start;
   height: auto;
   justify-self: center;
+  max-width: 100%;
   min-height: 0;
 }
 
