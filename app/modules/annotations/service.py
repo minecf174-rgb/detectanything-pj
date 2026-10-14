@@ -90,7 +90,9 @@ class AnnotationService:
         latest_by_image: dict[int, dict] = {}
         latest_approved_by_image: dict[int, int] = {}
         pending_set_ids: set[int] = set()
+        set_details: dict[int, tuple[int, str, str, bool, int]] = {}
         for image_id, annotation_set_id, source_type, status, is_negative, _revision, box_count in rows:
+            set_details[annotation_set_id] = (image_id, source_type, status, is_negative, box_count)
             if image_id not in latest_by_image:
                 latest_by_image[image_id] = {
                     "image_id": image_id,
@@ -100,6 +102,10 @@ class AnnotationService:
                     "box_count": box_count,
                     "is_negative": is_negative,
                     "class_ids": [],
+                    "label_class_ids": [],
+                    "result_class_ids": [],
+                    "has_label": False,
+                    "has_result": False,
                 }
             if status == "APPROVED" and image_id not in latest_approved_by_image:
                 latest_approved_by_image[image_id] = annotation_set_id
@@ -107,19 +113,25 @@ class AnnotationService:
                 pending_set_ids.add(annotation_set_id)
         active_set_ids = set(latest_approved_by_image.values()) | pending_set_ids
         if active_set_ids:
-            set_image_ids = {annotation_set_id: image_id for image_id, annotation_set_id, *_ in rows
-                             if annotation_set_id in active_set_ids}
-            class_ids_by_image: dict[int, set[int]] = {}
+            class_ids_by_set: dict[int, set[int]] = {}
             active_ids = sorted(active_set_ids)
             for offset in range(0, len(active_ids), 500):
                 for annotation_set_id, class_id in self.db.execute(
                     select(Annotation.annotation_set_id, Annotation.class_id)
                     .where(Annotation.annotation_set_id.in_(active_ids[offset:offset + 500]))
                 ):
-                    image_id = set_image_ids[annotation_set_id]
-                    class_ids_by_image.setdefault(image_id, set()).add(class_id)
-            for image_id, class_ids in class_ids_by_image.items():
-                latest_by_image[image_id]["class_ids"] = sorted(class_ids)
+                    class_ids_by_set.setdefault(annotation_set_id, set()).add(class_id)
+            for annotation_set_id in active_set_ids:
+                image_id, source_type, status, is_negative, box_count = set_details[annotation_set_id]
+                image_status = latest_by_image[image_id]
+                class_ids = class_ids_by_set.get(annotation_set_id, set())
+                image_status["class_ids"] = sorted(set(image_status["class_ids"]) | class_ids)
+                if status == "APPROVED" and not is_negative and box_count > 0:
+                    image_status["has_label"] = True
+                    image_status["label_class_ids"] = sorted(class_ids)
+                if source_type == "MODEL" and status in {"PENDING", "APPROVED"}:
+                    image_status["has_result"] = True
+                    image_status["result_class_ids"] = sorted(set(image_status["result_class_ids"]) | class_ids)
         return list(latest_by_image.values())
 
     def confirm_negative_image(self, image_id: int, current_user: User):

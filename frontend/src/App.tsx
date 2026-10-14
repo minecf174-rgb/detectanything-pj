@@ -99,6 +99,8 @@ type ImageFrame = {
   height: number;
 };
 
+type AnnotationBrowseMode = "labels" | "results" | "both";
+
 type TestImage = {
   key: string;
   fingerprint: string;
@@ -333,6 +335,7 @@ export function App() {
   const [selectedImageId, setSelectedImageId] = useState<number | null>(null);
   const [selectedClassId, setSelectedClassId] = useState<number | null>(null);
   const [classFilterId, setClassFilterId] = useState<number | null>(null);
+  const [annotationBrowseMode, setAnnotationBrowseMode] = useState<AnnotationBrowseMode>("both");
   const [negativeNavigationOnly, setNegativeNavigationOnly] = useState(false);
   const [newProjectOpen, setNewProjectOpen] = useState(false);
   const [className, setClassName] = useState("object");
@@ -484,9 +487,18 @@ export function App() {
     : 0;
   const classFilterImageIds = useMemo(() => new Set(
     classFilterId == null ? [] : imageAnnotationStatuses
-      .filter((status) => status.class_ids.includes(classFilterId))
+      .filter((status) => (annotationBrowseMode === "labels" ? status.label_class_ids
+        : annotationBrowseMode === "results" ? status.result_class_ids : status.class_ids).includes(classFilterId))
       .map((status) => status.image_id)
-  ), [classFilterId, imageAnnotationStatuses]);
+  ), [annotationBrowseMode, classFilterId, imageAnnotationStatuses]);
+  const browseModeImageIds = useMemo(() => new Set(imageAnnotationStatuses
+    .filter((status) => annotationBrowseMode === "labels" ? status.has_label : status.has_result)
+    .map((status) => status.image_id)), [annotationBrowseMode, imageAnnotationStatuses]);
+  const browseModeCounts = useMemo(() => ({
+    labels: imageAnnotationStatuses.filter((status) => status.has_label).length,
+    results: imageAnnotationStatuses.filter((status) => status.has_result).length,
+    both: images.length,
+  }), [imageAnnotationStatuses, images.length]);
   const classFilterName = classes.find((labelClass) => labelClass.class_id === classFilterId)?.name ?? null;
   const classFilterCount = useMemo(() => images.filter((image) => classFilterImageIds.has(image.image_id)).length,
     [images, classFilterImageIds]);
@@ -500,7 +512,11 @@ export function App() {
       ? (direction === 1 ? -1 : images.length)
       : images.findIndex((image) => image.image_id === selectedImageId);
     for (let index = currentIndex + direction; index >= 0 && index < images.length; index += direction) {
-      if (negativeNavigationOnly && !negativeImageIds.has(images[index].image_id)) continue;
+      if (negativeNavigationOnly) {
+        if (negativeImageIds.has(images[index].image_id)) return images[index];
+        continue;
+      }
+      if (annotationBrowseMode !== "both" && !browseModeImageIds.has(images[index].image_id)) continue;
       if (classFilterId == null || classFilterImageIds.has(images[index].image_id)) return images[index];
     }
     return null;
@@ -635,6 +651,7 @@ export function App() {
     setSelectedImageId(null);
     setSelectedClassId(null);
     setClassFilterId(null);
+    setAnnotationBrowseMode("both");
     setNegativeNavigationOnly(false);
     setEditingClassId(null);
     setAnnotationImageId(null);
@@ -1277,11 +1294,13 @@ export function App() {
           })
           : await api.createAnnotationSet(imageId, { annotations: newBoxes });
         let saveMessage = "Labels saved";
+        let pendingDismissed = true;
         // A human label replaces pending model suggestions, but failure to dismiss one must not duplicate saved boxes.
         if (pendingIds.length > 0) {
           try {
             await api.rejectAnnotationsBulk(pendingIds);
           } catch (error) {
+            pendingDismissed = false;
             saveMessage = `Labels saved, but pending suggestions remain: ${errorMessage(error)}`;
           }
         }
@@ -1296,7 +1315,14 @@ export function App() {
               status: "APPROVED",
               box_count: saved.annotations.length,
               is_negative: false,
-              class_ids: [...new Set(saved.annotations.map((box) => box.class_id))],
+              class_ids: [...new Set([
+                ...saved.annotations.map((box) => box.class_id),
+                ...(!pendingDismissed ? current.find((item) => item.image_id === imageId)?.result_class_ids ?? [] : []),
+              ])],
+              label_class_ids: [...new Set(saved.annotations.map((box) => box.class_id))],
+              result_class_ids: pendingDismissed ? [] : current.find((item) => item.image_id === imageId)?.result_class_ids ?? [],
+              has_label: saved.annotations.length > 0,
+              has_result: !pendingDismissed && (current.find((item) => item.image_id === imageId)?.has_result ?? false),
             },
           ]);
           if (selectedImageIdRef.current === imageId) {
@@ -1427,6 +1453,7 @@ export function App() {
       const rejectKey = matchesShortcut(event, shortcuts, "rejectSuggestion");
       const editKey = matchesShortcut(event, shortcuts, "editSuggestion");
       if (!poseCollecting && (acceptKey || rejectKey || editKey)) {
+        if (annotationBrowseMode === "labels") return;
         if (pendingSuggestions.length === 0) return;
         event.preventDefault();
         if (event.repeat || reviewShortcutInFlight.current) return;
@@ -1487,7 +1514,7 @@ export function App() {
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [activeView, autoLabelResults, busy, classes, editableSet, imageSelectorOpen, poseProject, shortcuts, workspaceSection,
+  }, [activeView, annotationBrowseMode, autoLabelResults, busy, classes, editableSet, imageSelectorOpen, poseProject, shortcuts, workspaceSection,
     selectedImageId, images, draftBoxes, pendingClassBox, annotationImageId, latestApproved, latestImageAnnotationSet, pendingSuggestions,
     poseCollecting, posePoints.length, drawingBox, selectedClassId, poseVisibilityMode, selectedReviewBoxIndex, selectedPoseKeypointIndex,
     annotationSaveState, failedImageBoxes.length, reviewActionOnCurrentImage, reviewSetId, selectedProjectId, reviewBoxes, editingManualLabels, reviewHistory.length]);
@@ -2002,6 +2029,10 @@ export function App() {
           box_count: 0,
           is_negative: true,
           class_ids: [],
+          label_class_ids: [],
+          result_class_ids: [],
+          has_label: false,
+          has_result: false,
         },
       ]);
     }, { refresh: false });
@@ -2103,11 +2134,14 @@ export function App() {
     const operation = acceptQueueTail.current.then(async () => {
       try {
         const accepted = await api.acceptAnnotation(set.annotation_set_id);
+        const refreshedStatus = await api.listImageAnnotationStatuses(projectId)
+          .then((statuses) => statuses.find((item) => item.image_id === set.image_id) ?? null)
+          .catch(() => null);
         acceptQueue.current.delete(set.annotation_set_id);
         if (selectedProjectIdRef.current === projectId) {
           setImageAnnotationStatuses((current) => [
             ...current.filter((item) => item.image_id !== set.image_id),
-            {
+            refreshedStatus ?? {
               image_id: set.image_id,
               annotation_set_id: accepted.annotation_set_id,
               source_type: "MODEL",
@@ -2118,6 +2152,13 @@ export function App() {
                 ...(current.find((item) => item.image_id === set.image_id)?.class_ids ?? []),
                 ...accepted.annotations.map((box) => box.class_id),
               ])],
+              label_class_ids: [...new Set(accepted.annotations.map((box) => box.class_id))],
+              result_class_ids: [...new Set([
+                ...(current.find((item) => item.image_id === set.image_id)?.result_class_ids ?? []),
+                ...accepted.annotations.map((box) => box.class_id),
+              ])],
+              has_label: accepted.annotations.length > 0,
+              has_result: true,
             },
           ]);
           if (selectedImageIdRef.current === set.image_id) {
@@ -2157,6 +2198,11 @@ export function App() {
           box_count: latest.annotations.length,
           is_negative: latest.is_negative,
           class_ids: [...new Set(activeSets.flatMap((item) => item.annotations.map((box) => box.class_id)))].sort((a, b) => a - b),
+          label_class_ids: [...new Set(latestApprovedSet?.annotations.map((box) => box.class_id) ?? [])].sort((a, b) => a - b),
+          result_class_ids: [...new Set(activeSets.filter((item) => item.source_type === "MODEL")
+            .flatMap((item) => item.annotations.map((box) => box.class_id)))].sort((a, b) => a - b),
+          has_label: !!latestApprovedSet && !latestApprovedSet.is_negative && latestApprovedSet.annotations.length > 0,
+          has_result: activeSets.some((item) => item.source_type === "MODEL"),
         }] : []),
       ]);
       if (selectedImageIdRef.current === failed.set.image_id) {
@@ -2350,8 +2396,19 @@ export function App() {
               </div>
             ))}
           </div>
+          {!poseProject && <div className="annotation-browse-modes" role="group" aria-label="Browse annotation source">
+            {(["labels", "results", "both"] as const).map((mode) => <button
+              className={annotationBrowseMode === mode && !negativeNavigationOnly ? "active" : ""}
+              type="button"
+              aria-pressed={annotationBrowseMode === mode && !negativeNavigationOnly}
+              onClick={() => { setAnnotationBrowseMode(mode); setNegativeNavigationOnly(false); }}
+              title={mode === "labels" ? "Browse approved labels, including accepted model results" : mode === "results" ? "Browse pending or accepted auto-label results" : "Browse labels and model results together"}
+              key={mode}
+            >{mode === "labels" ? "Labels" : mode === "results" ? "Results" : "Both"}<small>{browseModeCounts[mode]}</small></button>)}
+          </div>}
           {!poseProject && <button className={`annotation-negative-filter${negativeNavigationOnly ? " active" : ""}`} type="button" aria-pressed={negativeNavigationOnly} onClick={() => {
             setClassFilterId(null);
+            setAnnotationBrowseMode("both");
             setNegativeNavigationOnly((current) => !current);
           }} title="Use the arrows to browse only verified-negative images"><CircleDot size={16} /> <span>Verified negative · {negativeImageIds.size}{negativeNavigationOnly ? " · Filtering" : ""}</span></button>}
           <div className="annotation-sidebar-tools">
@@ -2448,14 +2505,14 @@ export function App() {
           )}
           {!poseProject && classFilterId != null && <div className="annotation-class-filter-bar" role="status">
             <span className="swatch" style={{ background: classColorById[classFilterId] }} />
-            <span>Filter: <strong>{classFilterName}</strong> · {classFilterCount} image{classFilterCount === 1 ? "" : "s"}</span>
+            <span>{annotationBrowseMode === "results" ? "Results" : annotationBrowseMode === "labels" ? "Labels" : "Both"}: <strong>{classFilterName}</strong> · {classFilterCount} image{classFilterCount === 1 ? "" : "s"}</span>
             <button type="button" onClick={() => setClassFilterId(null)} aria-label="Clear class filter" title="Clear class filter">Clear <X size={14} /></button>
           </div>}
           <AnnotationCanvas
             image={selectedImage}
-            boxes={editableSet ? [] : latestApproved?.annotations ?? []}
+            boxes={editableSet || annotationBrowseMode === "results" && latestApproved?.source_type !== "MODEL" ? [] : latestApproved?.annotations ?? []}
             draftBoxes={[...failedImageBoxes, ...queuedImageBoxes, ...draftBoxes]}
-            suggestions={editableSet ? [] : pendingSuggestions.flatMap((set) => set.annotations)}
+            suggestions={editableSet || annotationBrowseMode === "labels" ? [] : pendingSuggestions.flatMap((set) => set.annotations)}
             editableBoxes={editableSet ? reviewBoxes : []}
             selectedEditableIndex={selectedReviewBoxIndex}
             classId={selectedClassId}
@@ -2485,7 +2542,7 @@ export function App() {
             onPoseEditPoint={(point) => updateSelectedPoseKeypoint(point, poseEditVisibilityMode === "visible" ? 2 : 1)}
             busy={busy || imageSwitching || annotationImageId !== selectedImageId || reviewActionOnCurrentImage}
           />
-          {pendingSuggestions.length > 0 && <section className="review-band" aria-label="Review queue">
+          {pendingSuggestions.length > 0 && annotationBrowseMode !== "labels" && <section className="review-band" aria-label="Review queue">
             <SectionTitle title="Review Queue" />
             {pendingSuggestions.map((set) => {
               const acceptItem = acceptQueue.current.get(set.annotation_set_id);

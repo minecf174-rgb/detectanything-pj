@@ -1119,6 +1119,35 @@ label {
   color: #1c5fd4;
 }
 
+.annotation-browse-modes {
+  background: #f2f5f9;
+  border: 1px solid #d2dae5;
+  border-radius: 8px;
+  display: grid;
+  gap: 3px;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  padding: 3px;
+}
+
+.annotation-browse-modes button {
+  border: 0;
+  box-shadow: none;
+  display: grid;
+  font-size: 11px;
+  gap: 1px;
+  justify-items: center;
+  min-width: 0;
+  padding: 5px 2px;
+}
+
+.annotation-browse-modes button.active {
+  background: #ffffff;
+  color: #1c5fd4;
+  box-shadow: 0 1px 4px rgba(32, 48, 70, 0.15);
+}
+
+.annotation-browse-modes small { color: #667085; font-size: 10px; }
+
 .annotation-class-filter-bar {
   align-items: center;
   background: #e8f0ff;

@@ -225,6 +225,10 @@ def test_unused_dataset_version_can_be_deleted():
         "box_count": 1,
         "is_negative": False,
         "class_ids": [label_class["class_id"]],
+        "label_class_ids": [label_class["class_id"]],
+        "result_class_ids": [],
+        "has_label": True,
+        "has_result": False,
     }]
     version = client.post(
         "/datasets/versions",
@@ -453,15 +457,50 @@ def test_image_status_class_ids_include_active_multilabel_and_ignore_rejected_su
     current = client.get(url, headers=headers).json()[0]
     assert current["status"] == "PENDING"
     assert current["class_ids"] == class_ids
+    assert current["label_class_ids"] == [class_ids[0]]
+    assert current["result_class_ids"] == [class_ids[1]]
+    assert current["has_label"] is True
+    assert current["has_result"] is True
 
     rejected = client.post(f"/annotations/sets/{suggestion_id}/reject", headers=headers, json={})
     assert rejected.status_code == 200, rejected.text
     current = client.get(url, headers=headers).json()[0]
     assert current["class_ids"] == [class_ids[0]]
+    assert current["result_class_ids"] == []
+    assert current["has_result"] is False
 
     negative = client.post(f"/annotations/images/{image_id}/confirm-negative", headers=headers)
     assert negative.status_code == 200, negative.text
-    assert client.get(url, headers=headers).json()[0]["class_ids"] == []
+    current = client.get(url, headers=headers).json()[0]
+    assert current["class_ids"] == []
+    assert current["label_class_ids"] == []
+    assert current["has_label"] is False
+
+
+def test_accepted_auto_label_appears_in_both_label_and_result_browse_modes():
+    headers = _register("accepted-result-filter")
+    project_id = client.post("/projects", headers=headers, json={
+        "name": "Accepted result filter", "task_type": "OBJECT_DETECTION",
+    }).json()["project_id"]
+    class_id = client.post("/classes", headers=headers, json={
+        "project_id": project_id, "name": "person", "class_index": 0, "color": "#16a34a",
+    }).json()["class_id"]
+    image_id = client.post(f"/images/upload?project_id={project_id}", headers=headers,
+                           files={"file": ("person.png", _png_bytes(), "image/png")}).json()["image_id"]
+    with SessionLocal() as db:
+        suggestion = AutoLabelRepository(db).create_model_suggestion(image_id=image_id, model_id=None,
+            boxes=[{"class_id": class_id, "x_min": .1, "y_min": .1,
+                    "x_max": .7, "y_max": .7, "confidence": .8}])
+        suggestion_id = suggestion.annotation_set_id
+        db.commit()
+
+    response = client.post(f"/annotations/sets/{suggestion_id}/accept", headers=headers, json={})
+    assert response.status_code == 200, response.text
+    status = client.get(f"/annotations/projects/{project_id}/image-statuses", headers=headers).json()[0]
+    assert status["has_label"] is True
+    assert status["has_result"] is True
+    assert status["label_class_ids"] == [class_id]
+    assert status["result_class_ids"] == [class_id]
 
 
 def test_class_name_and_color_can_be_updated_without_changing_index():

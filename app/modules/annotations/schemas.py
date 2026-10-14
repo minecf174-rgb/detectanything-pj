@@ -118,3 +118,7 @@ class ImageAnnotationStatusRead(BaseModel):
     box_count: int
     is_negative: bool
     class_ids: list[int]
+    label_class_ids: list[int]
+    result_class_ids: list[int]
+    has_label: bool
+    has_result: bool

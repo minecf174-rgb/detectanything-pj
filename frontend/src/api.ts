@@ -116,6 +116,10 @@ export type ImageAnnotationStatus = {
   box_count: number;
   is_negative: boolean;
   class_ids: number[];
+  label_class_ids: number[];
+  result_class_ids: number[];
+  has_label: boolean;
+  has_result: boolean;
 };
 
 export type DatasetVersion = {
