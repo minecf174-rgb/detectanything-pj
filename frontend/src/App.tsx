@@ -31,7 +31,7 @@ import {
   Upload,
   X,
 } from "lucide-react";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { DragEvent, FormEvent, KeyboardEvent as ReactKeyboardEvent, PointerEvent, ReactNode } from "react";
 import {
   AnnotationBox,
@@ -310,6 +310,7 @@ function ProjectDashboard({
 }
 
 export function App() {
+  const annotationSidebarRef = useRef<HTMLElement | null>(null);
   const [session, setSession] = useState<AuthSession | null>(() => getAuthSession());
   const [shortcuts, setShortcuts] = useState<ShortcutBindings>(() => loadShortcuts(getAuthSession()?.user.user_id));
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
@@ -2358,7 +2359,7 @@ export function App() {
           )}
 
           {workspaceSection === "annotate" && <main className={`workspace annotation-workspace${editableSet ? " is-editing" : ""}`}>
-        <aside className="sidebar">
+        <aside className="sidebar" ref={annotationSidebarRef}>
           <SectionTitle title="Classes" />
           <div className="class-form">
             <label>
@@ -2510,6 +2511,7 @@ export function App() {
           </div>}
           <AnnotationCanvas
             image={selectedImage}
+            sidebarRef={annotationSidebarRef}
             boxes={editableSet || annotationBrowseMode === "results" && latestApproved?.source_type !== "MODEL" ? [] : latestApproved?.annotations ?? []}
             draftBoxes={[...failedImageBoxes, ...queuedImageBoxes, ...draftBoxes]}
             suggestions={editableSet || annotationBrowseMode === "labels" ? [] : pendingSuggestions.flatMap((set) => set.annotations)}
@@ -5038,6 +5040,7 @@ function AutoLabelResultPreview({
 
 function AnnotationCanvas({
   image,
+  sidebarRef,
   boxes,
   draftBoxes,
   suggestions,
@@ -5065,6 +5068,7 @@ function AnnotationCanvas({
   busy,
 }: {
   image: ImageItem | null;
+  sidebarRef: { current: HTMLElement | null };
   boxes: AnnotationBox[];
   draftBoxes: DraftBox[];
   suggestions: AnnotationBox[];
@@ -5097,6 +5101,8 @@ function AnnotationCanvas({
   const [current, setCurrent] = useState<{ x: number; y: number } | null>(null);
   const [imageReady, setImageReady] = useState(false);
   const [naturalSize, setNaturalSize] = useState<{ width: number; height: number } | null>(null);
+  const [canvasSize, setCanvasSize] = useState({ width: 0, height: 0 });
+  const [canvasHeight, setCanvasHeight] = useState<number | null>(null);
   const [isFileDragActive, setIsFileDragActive] = useState(false);
   const [editDrag, setEditDrag] = useState<{
     index: number;
@@ -5108,9 +5114,39 @@ function AnnotationCanvas({
   const imageUrl = useProtectedImageUrl(image);
   const imageWidth = naturalSize?.width ?? image?.width ?? 1;
   const imageHeight = naturalSize?.height ?? image?.height ?? 1;
-  const imageAspect = imageWidth > 0 && imageHeight > 0 ? imageWidth / imageHeight : 1;
-  // The canvas itself follows the image's aspect ratio, so image coordinates fill it exactly.
-  const imageFrame: ImageFrame = { left: 0, top: 0, width: 1, height: 1 };
+  const imageFrame: ImageFrame = canvasSize.width > 0 && canvasSize.height > 0
+    ? getImageFrameForDimensions(imageWidth, imageHeight, canvasSize.width / canvasSize.height)
+    : { left: 0, top: 0, width: 1, height: 1 };
+
+  useLayoutEffect(() => {
+    const canvas = ref.current;
+    if (!canvas) return;
+    const sidebar = sidebarRef.current;
+    const measure = () => {
+      const canvasRect = canvas.getBoundingClientRect();
+      const sidebarRect = sidebar?.getBoundingClientRect();
+      const sideBySide = sidebarRect && sidebarRect.width > 0 && sidebarRect.right <= canvasRect.left;
+      const availableHeight = sideBySide ? sidebarRect.bottom - canvasRect.top : 0;
+      const nextHeight = availableHeight > 240 ? Math.round(availableHeight) : null;
+      setCanvasHeight((previous) => previous === nextHeight ? previous : nextHeight);
+      setCanvasSize((previous) => {
+        const width = canvas.clientWidth;
+        const height = canvas.clientHeight;
+        return previous.width === width && previous.height === height ? previous : { width, height };
+      });
+    };
+    const observer = new ResizeObserver(measure);
+    observer.observe(canvas);
+    if (sidebar) observer.observe(sidebar);
+    const navigation = canvas.parentElement?.querySelector(".annotation-image-navigation");
+    if (navigation) observer.observe(navigation);
+    window.addEventListener("resize", measure);
+    measure();
+    return () => {
+      observer.disconnect();
+      window.removeEventListener("resize", measure);
+    };
+  }, [sidebarRef]);
 
   useEffect(() => {
     setImageReady(false);
@@ -5126,13 +5162,25 @@ function AnnotationCanvas({
   }, [classId, current, requireClassAfterDraw, start]);
 
   const point = (event: { clientX: number; clientY: number }) => {
-    const rect = ref.current?.getBoundingClientRect();
-    if (!rect) return { x: 0, y: 0 };
-    const display = imageFrameToPixels(imageFrame, rect.width, rect.height);
+    const canvas = ref.current;
+    if (!canvas) return { x: 0, y: 0 };
+    const rect = canvas.getBoundingClientRect();
+    const display = imageFrameToPixels(imageFrame, canvas.clientWidth, canvas.clientHeight);
     return {
-      x: clamp((event.clientX - rect.left - display.left) / display.width),
-      y: clamp((event.clientY - rect.top - display.top) / display.height),
+      x: clamp((event.clientX - rect.left - canvas.clientLeft - display.left) / display.width),
+      y: clamp((event.clientY - rect.top - canvas.clientTop - display.top) / display.height),
     };
+  };
+
+  const isInsideImage = (event: { clientX: number; clientY: number }) => {
+    const canvas = ref.current;
+    if (!canvas) return false;
+    const rect = canvas.getBoundingClientRect();
+    const display = imageFrameToPixels(imageFrame, canvas.clientWidth, canvas.clientHeight);
+    const x = event.clientX - rect.left - canvas.clientLeft;
+    const y = event.clientY - rect.top - canvas.clientTop;
+    return x >= display.left && x <= display.left + display.width
+      && y >= display.top && y <= display.top + display.height;
   };
 
   const startEditableDrag = (event: PointerEvent<HTMLDivElement>, index: number, mode: EditMode) => {
@@ -5164,7 +5212,7 @@ function AnnotationCanvas({
   return (
     <div
       className={`annotation-canvas${image ? " has-image" : ""}${isFileDragActive ? " file-drag-active" : ""}`}
-      style={image ? { aspectRatio: `${imageWidth} / ${imageHeight}`, width: `min(100%, ${78 * imageAspect}vh)` } : undefined}
+      style={image ? { height: canvasHeight == null ? "min(70dvh, 720px)" : `${canvasHeight}px` } : undefined}
       ref={ref}
       onDragEnter={(event) => {
         if (!canHandleFiles(event)) return;
@@ -5192,6 +5240,7 @@ function AnnotationCanvas({
           if (!busy && !image) fileInputRef.current?.click();
           return;
         }
+        if (!isInsideImage(event)) return;
         if (poseCollecting || poseEditing) return;
         onEditableSelect(null);
         event.currentTarget.setPointerCapture(event.pointerId);
@@ -5207,11 +5256,11 @@ function AnnotationCanvas({
           onDrawingChange(false);
           return;
         }
-        if (poseCollecting && imageReady) {
+        if (poseCollecting && imageReady && isInsideImage(event)) {
           onPosePoint(point(event));
           return;
         }
-        if (poseEditing && imageReady) {
+        if (poseEditing && imageReady && isInsideImage(event)) {
           onPoseEditPoint(point(event));
           return;
         }
@@ -5233,7 +5282,7 @@ function AnnotationCanvas({
       }}
       onPointerCancel={() => { setStart(null); setCurrent(null); onDrawingChange(false); }}
       onContextMenu={(event) => {
-        if (busy || !imageReady || poseCollecting || poseEditing) return;
+        if (busy || !imageReady || poseCollecting || poseEditing || !isInsideImage(event)) return;
         const clicked = point(event);
         const candidates = (editableBoxes.length > 0
           ? editableBoxes.map((box, index) => ({ box, index, source: "editable" as const }))
