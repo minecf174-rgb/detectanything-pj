@@ -44,6 +44,44 @@ def _pt_upload() -> bytes:
     return output.getvalue()
 
 
+def test_pretrained_pose_test_uses_small_weights_for_batch_and_stream(monkeypatch):
+    headers = _register("pose-small-test")
+    project = client.post(
+        "/projects", headers=headers,
+        json={"name": "Pose small test", "task_type": "POSE_ESTIMATION"},
+    ).json()
+    original_exists = Path.exists
+    monkeypatch.setattr(
+        Path, "exists",
+        lambda path: path.name == "yolo26s-pose.pt" or original_exists(path),
+    )
+    used_weights: list[str] = []
+
+    def fake_predict(_self, model_path, image_paths, _config):
+        used_weights.append(model_path.name)
+        return [{"boxes": []} for _ in image_paths]
+
+    def fake_predict_stream(_self, model_path, image_paths, _config):
+        used_weights.append(model_path.name)
+        for _ in image_paths:
+            yield {"boxes": []}
+
+    monkeypatch.setattr(UltralyticsYoloPredictor, "predict", fake_predict)
+    monkeypatch.setattr(UltralyticsYoloPredictor, "predict_stream", fake_predict_stream)
+    query = f"project_id={project['project_id']}&confidence_threshold=0.25"
+    files = [("files", ("test.png", _png_bytes(), "image/png"))]
+
+    batch = client.post(f"/models/pose-pretrained/predict-batch?{query}", headers=headers, files=files)
+    assert batch.status_code == 200, batch.text
+    assert batch.json()["results"][0]["boxes"] == []
+
+    with client.stream("POST", f"/models/pose-pretrained/predict-batch-stream?{query}", headers=headers, files=files) as streamed:
+        assert streamed.status_code == 200, streamed.text
+        events = [json.loads(line) for line in streamed.iter_lines() if line]
+    assert events[0]["result"]["boxes"] == []
+    assert used_weights == ["yolo26s-pose.pt", "yolo26s-pose.pt"]
+
+
 def test_import_model_is_project_scoped_and_imports_classes(monkeypatch):
     owner = _register("import-owner")
     other = _register("import-other")

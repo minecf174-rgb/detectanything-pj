@@ -4312,7 +4312,7 @@ function ModelTestWorkspace({
               disabled={busy}
             >
               <option value="">Choose a model</option>
-              {poseProject && <option value="pose-pretrained">YOLO26 Pose Nano pretrained (base)</option>}
+              {poseProject && <option value="pose-pretrained">YOLO26 Pose Small pretrained (base)</option>}
               {[...projectModels].reverse().map((model) => (
                 <option key={model.model_id} value={model.model_id}>
                   Model v{model.version} · {model.source_type === "IMPORTED" ? "Imported" : `mAP50 ${formatMetric(model.map50)}`}
@@ -4414,7 +4414,7 @@ function ModelTestWorkspace({
 
       <aside className="rightbar test-sidebar">
         <Panel title="Test run">
-          <Metric label="Model" value={selectedModelId === "pose-pretrained" ? "Pose Nano base" : selectedModel ? `v${selectedModel.version}` : "-"} />
+          <Metric label="Model" value={selectedModelId === "pose-pretrained" ? "Pose Small base" : selectedModel ? `v${selectedModel.version}` : "-"} />
           <Metric label="Threshold" value={confidenceThreshold.toFixed(2)} />
           <Metric label="Images" value={images.length} />
           {progress.total > 0 && <div className="test-progress" aria-label={`Processed ${progress.processed} of ${progress.total} images`}>

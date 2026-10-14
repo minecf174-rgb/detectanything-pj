@@ -375,7 +375,7 @@ class ModelService:
             raise HTTPException(status_code=413, detail="Each test image must be 25 MB or smaller")
 
         require_project_owner(self.db, current_user, project_id)
-        pose_weights = Path(__file__).resolve().parents[3] / "yolo26n-pose.pt"
+        pose_weights = Path(__file__).resolve().parents[3] / "yolo26s-pose.pt"
         if not pose_weights.exists():
             raise HTTPException(status_code=404, detail="YOLO26 pose pretrained weights are not installed")
 
@@ -434,7 +434,7 @@ class ModelService:
         current_user: User,
     ):
         require_project_owner(self.db, current_user, project_id)
-        pose_weights = Path(__file__).resolve().parents[3] / "yolo26n-pose.pt"
+        pose_weights = Path(__file__).resolve().parents[3] / "yolo26s-pose.pt"
         if not pose_weights.exists():
             raise HTTPException(status_code=404, detail="YOLO26 pose pretrained weights are not installed")
         return self._prediction_event_stream(

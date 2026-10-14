@@ -220,6 +220,7 @@ if not _SafeLoad.SUPPORTED:
 
 for filename, expected_task in (
     ("yolo26n-pose.pt", "pose"),
+    ("yolo26s-pose.pt", "pose"),
     ("yolo26x-pose.pt", "pose"),
     ("yolo26s.pt", "detect"),
 ):
