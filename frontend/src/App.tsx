@@ -2360,7 +2360,28 @@ export function App() {
 
           {workspaceSection === "annotate" && <main className={`workspace annotation-workspace${editableSet ? " is-editing" : ""}`}>
         <aside className="sidebar" ref={annotationSidebarRef}>
-          <SectionTitle title="Classes" />
+          {!poseProject && <>
+            <SectionTitle title="Browse images" />
+            <div className="annotation-browse-modes" role="group" aria-label="Browse annotation source">
+              {(["labels", "results", "both"] as const).map((mode) => <button
+                className={annotationBrowseMode === mode && !negativeNavigationOnly ? "active" : ""}
+                type="button"
+                aria-pressed={annotationBrowseMode === mode && !negativeNavigationOnly}
+                onClick={() => {
+                  setAnnotationBrowseMode(mode);
+                  setClassFilterId(null);
+                  setNegativeNavigationOnly(false);
+                }}
+                title={mode === "labels" ? "Browse approved labels across all classes" : mode === "results" ? "Browse pending or accepted auto-label results across all classes" : "Browse all images across all classes"}
+                key={mode}
+              >{mode === "labels" ? "Labels" : mode === "results" ? "Results" : "Both"}<small>{browseModeCounts[mode]}</small></button>)}
+            </div>
+            <small className="annotation-browse-hint">{negativeNavigationOnly ? "Browsing verified negatives." : classFilterId == null ? "All classes shown. Choose a class below to narrow this view." : `Showing ${classFilterName ?? "selected class"} only. Choose All classes to clear.`}</small>
+          </>}
+          <div className="annotation-classes-heading">
+            <SectionTitle title="Classes" />
+            {!poseProject && <button type="button" className={classFilterId == null && !negativeNavigationOnly ? "active" : ""} aria-pressed={classFilterId == null && !negativeNavigationOnly} onClick={() => { setClassFilterId(null); setNegativeNavigationOnly(false); }}>All classes</button>}
+          </div>
           <div className="class-form">
             <label>
               Class Name
@@ -2397,16 +2418,6 @@ export function App() {
               </div>
             ))}
           </div>
-          {!poseProject && <div className="annotation-browse-modes" role="group" aria-label="Browse annotation source">
-            {(["labels", "results", "both"] as const).map((mode) => <button
-              className={annotationBrowseMode === mode && !negativeNavigationOnly ? "active" : ""}
-              type="button"
-              aria-pressed={annotationBrowseMode === mode && !negativeNavigationOnly}
-              onClick={() => { setAnnotationBrowseMode(mode); setNegativeNavigationOnly(false); }}
-              title={mode === "labels" ? "Browse approved labels, including accepted model results" : mode === "results" ? "Browse pending or accepted auto-label results" : "Browse labels and model results together"}
-              key={mode}
-            >{mode === "labels" ? "Labels" : mode === "results" ? "Results" : "Both"}<small>{browseModeCounts[mode]}</small></button>)}
-          </div>}
           {!poseProject && <button className={`annotation-negative-filter${negativeNavigationOnly ? " active" : ""}`} type="button" aria-pressed={negativeNavigationOnly} onClick={() => {
             setClassFilterId(null);
             setAnnotationBrowseMode("both");
